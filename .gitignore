@@ -6,3 +6,13 @@ user-data/
 *.log
 build/
 dist/
+.ruff_cache/
+.env
+.env.*
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.zip
+*.7z
+*.tar.gz
