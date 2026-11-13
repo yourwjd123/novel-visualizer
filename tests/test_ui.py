@@ -2,10 +2,12 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
-from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtWidgets import QApplication
+
 from novelviz.storage import Store
-from novelviz.ui import Window, seed_demo
+from novelviz.ui import Window as DesktopWindow
+from novelviz.ui import seed_demo
 
 
 @pytest.fixture(scope="module")
@@ -77,7 +79,8 @@ def test_unsent_draft_survives_switch_and_invalid_configuration(app, tmp_path):
 
 def test_attachment_confirmation_and_pure_text_default(app, tmp_path, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
-    import novelviz.ui as ui
+
+    from novelviz import ui
 
     seed_demo(Store(tmp_path))
     w = Window(tmp_path)
@@ -159,7 +162,7 @@ def test_export_and_backup_restore(app, tmp_path, monkeypatch):
 
 
 def test_appearance_modes_and_image(app, tmp_path):
-    from PySide6.QtGui import QImage, QColor
+    from PySide6.QtGui import QColor, QImage
 
     seed_demo(Store(tmp_path))
     w = Window(tmp_path)
@@ -191,3 +194,9 @@ def set_real_connection(w):
         ),
     )
     w.param_form.reload_connections(cid)
+
+
+def Window(root):
+    window = DesktopWindow(root)
+    window.activate_account(window.store.accounts[0]["id"])
+    return window

@@ -1,34 +1,37 @@
 """Editors and drop targets shared by the modular desktop workspace."""
 
 from __future__ import annotations
+
 import copy
 import json
 from pathlib import Path
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QFormLayout,
-    QLabel,
-    QPushButton,
-    QDialog,
-    QLineEdit,
-    QPlainTextEdit,
-    QComboBox,
-    QSpinBox,
-    QDoubleSpinBox,
     QCheckBox,
+    QComboBox,
+    QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFileDialog,
-    QMessageBox,
+    QFormLayout,
+    QHBoxLayout,
     QInputDialog,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
     QScrollArea,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
 )
-from .storage import uid, DEFAULTS, read_document, redact
+
 from .connections import KINDS, clean_profile
-from .prompts import default_template, assemble, VERSION
+from .prompts import VERSION, assemble, default_template
+from .storage import DEFAULTS, read_document, redact, uid
 
 
 def btn(text, fn):
@@ -242,7 +245,7 @@ class NodeForm(QWidget):
             lambda paths: self.drop_text(paths, self.supplement)
         )
         l.addWidget(self.supplement)
-        l.addWidget(btn("预览实际输入（不发送）", win.preview_input))
+        l.addWidget(btn("预览提示词（不发送）", lambda: win.preview_config_form(self)))
         self.reload_connections(params.get("connection_id", f"node-{node}"))
         self.reload_templates(
             params.get("template", {}).get(

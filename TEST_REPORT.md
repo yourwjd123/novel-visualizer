@@ -1,15 +1,24 @@
-# 0.2.0 验证记录
+# v0.3.0-beta.1 测试版验证记录
 
 ## 结果
 
-- `QT_QPA_PLATFORM=offscreen python -m pytest -q`：**42 passed**。
+- `QT_QPA_PLATFORM=offscreen python -m pytest -q`：**51 passed**。
 - `ruff check novelviz tests main.py --select F`：通过。
 - `python -m compileall -q novelviz main.py`：通过。
 - Qt 实际窗口截图已更新到 `docs/previews/`；检查了情节卡、资产关联、节点连接/模板、图片生成页、收起侧栏及暗色主题。
 
 环境：Linux、Python 3.12、PySide6 6.12.0，Qt Fusion/offscreen。
 
-## 新版重点覆盖
+## 0.3 新增验证
+
+- 访客启动不创建账户、不选择个人项目、不加载节点凭据；取消登录不创建项目。
+- 情节卡实际布局可见；AI 浮窗打开不缩小主工作区，关闭再开保留草稿。
+- 统一设置名称、节点默认提示词保存及独立性；图片设置重开后控件可见。
+- 未保存配置可取消离开；手工拆分归档原情节，保留原文；成果索引按场景关联且重复选择不累积索引项。
+- 实际 Qt 截图覆盖原文情节、视觉资产、场景插图及语言模型设置；另检查 1000px 窗口和浮窗。
+- 本次未调用付费远端模型；网络协议沿用模拟服务测试。未在 Windows 实机验证或打包 EXE。本版本作为预发布测试版提供。
+
+## 既有重点覆盖
 
 - 8 个 LLM 阶段、13 个详细任务模板；模板修改、新增、恢复与结构化输出约定。
 - 情节拆分遗漏、重叠、超界被拒绝；不自动调用模型修复。

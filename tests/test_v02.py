@@ -1,22 +1,25 @@
-from novelviz.connections import credential_id
 import json
 import os
 import zipfile
 
+from novelviz.connections import credential_id
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
-from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtCore import QEventLoop, QTimer
-from PySide6.QtGui import QImage, QColor
-from novelviz.storage import Store, Project, write_json
+from PySide6.QtGui import QColor, QImage
+from PySide6.QtWidgets import QApplication, QMessageBox
+
 from novelviz.prompts import (
-    default_template,
     assemble,
+    default_template,
     parse_object,
-    validate_scenes,
     validate_assets,
+    validate_scenes,
 )
-from novelviz.ui import Window, seed_demo
+from novelviz.storage import Project, Store, write_json
+from novelviz.ui import Window as DesktopWindow
+from novelviz.ui import seed_demo
 
 
 @pytest.fixture(scope="module")
@@ -196,7 +199,7 @@ def test_settings_import_cannot_adopt_existing_keys(tmp_path):
 
 
 def test_node_connections_and_keys_are_independent(app, tmp_path, monkeypatch):
-    import novelviz.ui as ui
+    from novelviz import ui
 
     seed_demo(Store(tmp_path))
     w = Window(tmp_path)
@@ -317,7 +320,7 @@ def test_sidebar_state_is_account_scoped(app, tmp_path):
     w.show()
     app.processEvents()
     w.toggle_sidebar()
-    assert w.side.isHidden()
+    assert w.side.width() <= 60
     w.close()
     w = Window(tmp_path)
     assert w.settings["sidebar_visible"] is False
@@ -355,7 +358,7 @@ def test_card_layout_keeps_buttons_visible(app, tmp_path):
 def test_persistent_credentials_scoped_to_account_and_connection(
     app, tmp_path, monkeypatch
 ):
-    import novelviz.ui as ui
+    from novelviz import ui
 
     memory = {}
     monkeypatch.setattr(ui, "get_key", lambda slot: memory.get(slot, ""))
@@ -377,7 +380,8 @@ def test_persistent_credentials_scoped_to_account_and_connection(
 
 def test_image_submission_uses_its_own_key_and_snapshot(app, tmp_path, monkeypatch):
     import shutil
-    import novelviz.ui as ui
+
+    from novelviz import ui
 
     seed_demo(Store(tmp_path))
     w = Window(tmp_path)
@@ -411,3 +415,9 @@ def test_image_submission_uses_its_own_key_and_snapshot(app, tmp_path, monkeypat
     assert "IMAGE_KEY" not in json.dumps(j) and "TEXT_KEY" not in json.dumps(j)
     assert w.image_list.count() == 1
     w.close()
+
+
+def Window(root):
+    window = DesktopWindow(root)
+    window.activate_account(window.store.accounts[0]["id"])
+    return window

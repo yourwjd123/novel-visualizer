@@ -1,6 +1,7 @@
 """Readable project files plus a transactional SQLite project index. No credentials."""
 
 from __future__ import annotations
+
 import copy
 import hashlib
 import json
@@ -8,7 +9,7 @@ import re
 import shutil
 import sqlite3
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 NODES = [
@@ -42,6 +43,7 @@ DEFAULTS = dict(
     background_opacity=18,
     font_size=14,
     sidebar_visible=True,
+    assistant_geometry="",
     project_rules="",
     confirm_attachments=True,
     provider="demo",
@@ -139,8 +141,8 @@ def read_document(path):
         )
     if ext == ".epub":
         import ebooklib
-        from ebooklib import epub
         from bs4 import BeautifulSoup
+        from ebooklib import epub
 
         book = epub.read_epub(str(p), options={"ignore_ncx": True})
         docs = {i.get_id(): i for i in book.get_items_of_type(ebooklib.ITEM_DOCUMENT)}
@@ -153,14 +155,14 @@ def read_document(path):
 
 
 class Store:
-    def __init__(self, root):
+    def __init__(self, root, create_default=True):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.index = self.root / "accounts.json"
         self.accounts = (
             json.loads(self.index.read_text("utf-8")) if self.index.exists() else []
         )
-        if not self.accounts:
+        if not self.accounts and create_default:
             self.create_account("默认账户")
 
     def save(self):
@@ -230,10 +232,12 @@ class Store:
             path,
             redact(
                 dict(
-                    format="novelviz-settings-v2",
+                    format="novelviz-settings-v3",
                     settings=data,
                     connections=profiles,
                     templates=self.templates(a),
+                    node_defaults=self.node_defaults(a),
+                    image_defaults=self.image_defaults(a),
                 ),
                 secrets,
             ),
@@ -241,7 +245,11 @@ class Store:
 
     def import_settings(self, a, path):
         data = json.loads(Path(path).read_text("utf-8"))
-        if data.get("format") not in ("novelviz-settings-v1", "novelviz-settings-v2"):
+        if data.get("format") not in (
+            "novelviz-settings-v1",
+            "novelviz-settings-v2",
+            "novelviz-settings-v3",
+        ):
             raise ValueError("不是本软件的设置导出文件")
         s = clean_settings(data["settings"])
         s["background"] = ""
@@ -249,12 +257,15 @@ class Store:
         s["comfy_url"] = DEFAULTS["comfy_url"]
         profiles = []
         templates = []
-        if data.get("format") == "novelviz-settings-v2":
+        id_map = {}
+        if data.get("format") in ("novelviz-settings-v2", "novelviz-settings-v3"):
             from .connections import clean_profile
 
             for c in data.get("connections", []):
                 c = copy.deepcopy(c)
+                old_id = c.get("id")
                 c["id"] = "import-" + uid()
+                id_map[old_id] = c["id"]
                 c["legacy"] = False
                 profiles.append(clean_profile(c))
             from .prompts import DEFAULT_IDS
@@ -281,9 +292,19 @@ class Store:
             self.save_connection(a, c)
         for t in templates:
             self.save_template(a, t)
+        for node, params in data.get("node_defaults", {}).items():
+            params = copy.deepcopy(params)
+            params["connection_id"] = id_map.get(params.get("connection_id"), "")
+            if str(node).isdigit() and 0 <= int(node) < len(NODES):
+                self.save_node_default(a, int(node), params)
+        image = data.get("image_defaults", {})
+        if image:
+            image = copy.deepcopy(image)
+            image["connection_id"] = id_map.get(image.get("connection_id"), "")
+            self.save_image_defaults(a, image)
 
     def connections(self, a):
-        from .connections import defaults, clean_profile
+        from .connections import clean_profile, defaults
 
         path = self.account_dir(a) / "账户设置/connections.json"
         if not path.exists():
@@ -344,6 +365,46 @@ class Store:
             write_json(
                 path, [x for x in json.loads(path.read_text("utf-8")) if x["id"] != tid]
             )
+
+    def node_defaults(self, a):
+        path = self.account_dir(a) / "账户设置/node-defaults.json"
+        return json.loads(path.read_text("utf-8")) if path.exists() else {}
+
+    def save_node_default(self, a, node, params, secrets=()):
+        if type(node) is not int or not 0 <= node < len(NODES):
+            raise ValueError("节点无效")
+        fields = {
+            "connection_id",
+            "template",
+            "supplement",
+            "max_tokens",
+            "temperature",
+            "template_id",
+        }
+        data = {k: copy.deepcopy(v) for k, v in params.items() if k in fields}
+        rows = self.node_defaults(a)
+        rows[str(node)] = redact(data, secrets)
+        write_json(self.account_dir(a) / "账户设置/node-defaults.json", rows)
+
+    def image_defaults(self, a):
+        path = self.account_dir(a) / "账户设置/image-defaults.json"
+        return json.loads(path.read_text("utf-8")) if path.exists() else {}
+
+    def save_image_defaults(self, a, data, secrets=()):
+        fields = {
+            "connection_id",
+            "workflow",
+            "mapping",
+            "seed",
+            "size",
+            "generation_rules",
+        }
+        write_json(
+            self.account_dir(a) / "账户设置/image-defaults.json",
+            redact(
+                {k: copy.deepcopy(v) for k, v in data.items() if k in fields}, secrets
+            ),
+        )
 
     def projects(self, a):
         return sorted((self.account_dir(a) / "项目").glob("*/08_项目数据/project.json"))
@@ -435,7 +496,7 @@ class Project:
         text = self.segment_text(sid)
         return [
             dict(number=i + 1, text=m.group(), start=m.start(), end=m.end())
-            for i, m in enumerate(re.finditer(r"\S.*?(?=\n\s*\n|\Z)", text, re.S))
+            for i, m in enumerate(re.finditer(r"\S.*?(?=\n\s*\n|\Z)", text, re.DOTALL))
         ]
 
     def scenes(self, sid, archived=False):
@@ -648,6 +709,82 @@ class Project:
                 if d["status"] == "已确认":
                     d.update(status="需复核", stale_reason=NODES[node] + "已更新")
                     self.save_node(target, n, d)
+
+    def replace_scene_partition(self, old_ids, rows):
+        old = [self.scene(s) for s in old_ids]
+        if not old or any(not s or s.get("archived") for s in old):
+            raise ValueError("请选择有效的未归档情节")
+        old.sort(key=lambda s: s["start_paragraph"])
+        sid = old[0]["segment"]
+        if any(s["segment"] != sid for s in old):
+            raise ValueError("只能合并同一原文片段的情节")
+        for a, b in zip(old, old[1:]):
+            if a["end_paragraph"] + 1 != b["start_paragraph"]:
+                raise ValueError("所选情节不是连续范围")
+        position = old[0]["start_paragraph"]
+        for r in rows:
+            if r["start_paragraph"] != position or r["end_paragraph"] < position:
+                raise ValueError("新情节范围必须连续")
+            position = r["end_paragraph"] + 1
+        if position != old[-1]["end_paragraph"] + 1:
+            raise ValueError("新情节必须覆盖原范围")
+        result = [
+            self.save_scene(dict(r, segment=sid, origin="用户手工调整"), False)
+            for r in rows
+        ]
+        for item in old:
+            item["archived"] = True
+            self.db.execute(
+                "UPDATE scenes SET data=?,archived=1 WHERE id=?",
+                (json.dumps(item, ensure_ascii=False), item["id"]),
+            )
+            write_json(
+                self.path / "02_文本与解析/情节模块" / item["id"] / "当前情节.json",
+                item,
+            )
+        self.db.commit()
+        return result
+
+    def final_results(self):
+        path = self.path / "06_最终成果/成果索引.json"
+        return json.loads(path.read_text("utf-8")) if path.exists() else []
+
+    def register_result(self, scene_id, path, job_id=""):
+        scene = self.scene(scene_id)
+        if not scene:
+            raise ValueError("请先选择情节")
+        path = Path(path).resolve()
+        if self.path not in path.parents:
+            raise ValueError("成果必须位于项目目录")
+        rows = self.final_results()
+        rows = [r for r in rows if r["scene"] != scene_id]
+        rows.append(
+            dict(
+                id=uid(),
+                scene=scene_id,
+                segment=scene["segment"],
+                title=scene["title"],
+                file=path.relative_to(self.path).as_posix(),
+                selected=now(),
+                job=job_id,
+            )
+        )
+        write_json(self.path / "06_最终成果/成果索引.json", rows)
+
+    def progress(self):
+        scenes = [
+            json.loads(r[0])
+            for r in self.db.execute("SELECT data FROM scenes WHERE archived=0")
+        ]
+        assets = self.assets()
+        results = self.final_results()
+        return dict(
+            segments=len(self.segments()),
+            scenes=len(scenes),
+            confirmed_assets=sum(a["review"] in ("已确认", "已锁定") for a in assets),
+            assets=len(assets),
+            results=len(results),
+        )
 
     def save_asset_image(self, asset, path):
         source = Path(path)

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import argparse
 import copy
 import html
@@ -9,44 +10,55 @@ import threading
 import zipfile
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QSettings, QThread, Signal, QUrl, QTimer
+from PySide6.QtCore import QPoint, QSettings, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QComboBox,
-    QFileDialog,
-    QMessageBox,
-    QInputDialog,
-    QDialog,
-    QFormLayout,
-    QLineEdit,
-    QTextEdit,
-    QPlainTextEdit,
-    QSpinBox,
     QCheckBox,
-    QTabWidget,
+    QComboBox,
+    QDialog,
     QDialogButtonBox,
-    QScrollArea,
-    QSplitter,
-    QListWidget,
-    QStackedWidget,
+    QFileDialog,
     QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QLayout,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSpinBox,
+    QStackedWidget,
+    QTabBar,
+    QTabWidget,
+    QTextEdit,
     QTreeWidget,
     QTreeWidgetItem,
-    QHeaderView,
-    QGridLayout,
-    QTabBar,
-    QLayout,
+    QVBoxLayout,
+    QWidget,
 )
-from .storage import Store, Project, NODES, read_document, uid, now, write_json, redact
-from .providers import text_call, bind_workflow, comfy_call, UnknownOutcome, image_call
+
 from .credentials import get_key, set_key
+from .providers import UnknownOutcome, bind_workflow, comfy_call, image_call, text_call
+from .storage import (
+    DEFAULTS,
+    NODES,
+    Project,
+    Store,
+    now,
+    read_document,
+    redact,
+    uid,
+    write_json,
+)
 
 
 def button(text, fn, primary=False):
@@ -124,229 +136,41 @@ class Backdrop(QWidget):
             )
 
 
-from .components import NodeForm, ConnectionDialog, SceneDialog, AssetDialog, DropEdit
+from .components import AssetDialog, ConnectionDialog, DropEdit, NodeForm, SceneDialog
 from .connections import KINDS
-from .prompts import parse_object, validate_scenes, validate_assets
-
-
-class SettingsDialog(QDialog):
-    def __init__(self, win):
-        super().__init__(win)
-        self.win = win
-        self.s = copy.deepcopy(win.settings)
-        self.setWindowTitle("账户设置")
-        self.resize(820, 720)
-        l = QVBoxLayout(self)
-        tabs = QTabWidget()
-        l.addWidget(tabs)
-        conn = QWidget()
-        cl = QVBoxLayout(conn)
-        cl.addWidget(
-            label(
-                "各节点独立选择连接；密钥在连接编辑器中分别设置。编辑复用连接会影响后续调用，复制连接不会复制密钥。",
-                "muted",
-            )
-        )
-        self.list = QListWidget()
-        cl.addWidget(self.list, 1)
-        row = QHBoxLayout()
-        row.addWidget(button("新建连接", self.new_connection))
-        row.addWidget(button("编辑 / 密钥", self.edit_connection))
-        cl.addLayout(row)
-        tabs.addTab(conn, "连接与密钥")
-        self.reload()
-        general = QWidget()
-        f = QFormLayout(general)
-        self.theme = QComboBox()
-        self.theme.addItems(["明亮", "暗色", "跟随系统"])
-        self.theme.setCurrentIndex(["light", "dark", "system"].index(self.s["theme"]))
-        self.font = QSpinBox()
-        self.font.setRange(11, 24)
-        self.font.setValue(self.s["font_size"])
-        self.bg = QLineEdit(self.s["background"])
-        row = QWidget()
-        h = QHBoxLayout(row)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.addWidget(self.bg)
-        h.addWidget(button("选图片", self.choose_bg))
-        self.opacity = QSpinBox()
-        self.opacity.setRange(0, 60)
-        self.opacity.setValue(self.s["background_opacity"])
-        self.opacity.setSuffix(" %")
-        self.attach = QCheckBox("真实调用含附件时确认（包括历史附件）")
-        self.attach.setChecked(self.s["confirm_attachments"])
-        self.sidebar = QCheckBox("显示侧边栏")
-        self.sidebar.setChecked(self.s["sidebar_visible"])
-        for name, w in [
-            ("主题", self.theme),
-            ("字号", self.font),
-            ("背景", row),
-            ("背景可见度", self.opacity),
-            ("附件", self.attach),
-            ("导航", self.sidebar),
-        ]:
-            f.addRow(name, w)
-        f.addRow(button("一键恢复默认外观", self.reset_appearance))
-        tabs.addTab(general, "外观与交互")
-        project = QWidget()
-        pl = QVBoxLayout(project)
-        pl.addWidget(label("项目补充规则（和节点模板一起发送）"))
-        self.rules = DropEdit(
-            win.project.config.get("rules", "") if win.project else ""
-        )
-        self.rules.filesDropped.connect(
-            lambda paths: win.append_text_files(paths, self.rules)
-        )
-        pl.addWidget(self.rules, 1)
-        self.planner = QComboBox()
-        self.planner.addItem("不启用规划接口", "")
-        for c in win.store.connections(win.account):
-            if c["kind"] in ("demo", "openai"):
-                self.planner.addItem(c["name"], c["id"])
-        chosen = (
-            win.project.config.get("connections", {}).get("7", "")
-            if win.project
-            else ""
-        )
-        self.planner.setCurrentIndex(max(0, self.planner.findData(chosen)))
-        pl.addWidget(label("可选全过程规划连接"))
-        pl.addWidget(self.planner)
-        tabs.addTab(project, "项目规则与规划")
-        migration = QWidget()
-        ml = QVBoxLayout(migration)
-        ml.addWidget(
-            label(
-                "设置导出排除所有密钥和旧凭据引用，导入连接生成全新ID，不会借用当前账户已有密钥。服务地址及背景图片文件不共享。",
-                "muted",
-            )
-        )
-        ml.addWidget(button("导出已保存的设置与模板", self.export_settings))
-        ml.addWidget(button("导入设置与模板", self.import_settings))
-        ml.addWidget(
-            button(
-                "打开账户数据目录", lambda: reveal(win.store.account_dir(win.account))
-            )
-        )
-        ml.addStretch()
-        tabs.addTab(migration, "导入与导出")
-        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Save).setText("保存")
-        bb.button(QDialogButtonBox.Cancel).setText("取消")
-        bb.accepted.connect(self.save)
-        bb.rejected.connect(self.reject)
-        l.addWidget(bb)
-
-    def reload(self):
-        self.list.clear()
-        for c in self.win.store.connections(self.win.account):
-            self.list.addItem(c["name"] + "  /  " + KINDS[c["kind"]])
-            self.list.item(self.list.count() - 1).setData(Qt.UserRole, c)
-
-    def new_connection(self):
-        d = ConnectionDialog(self.win)
-        if d.exec():
-            self.reload()
-
-    def edit_connection(self):
-        item = self.list.currentItem()
-        if item:
-            d = ConnectionDialog(self.win, item.data(Qt.UserRole))
-            if d.exec():
-                self.reload()
-
-    def choose_bg(self):
-        p, _ = QFileDialog.getOpenFileName(
-            self, "背景图片", "", "图片 (*.png *.jpg *.jpeg *.webp)"
-        )
-        if p:
-            self.bg.setText(p)
-
-    def reset_appearance(self):
-        self.theme.setCurrentIndex(0)
-        self.font.setValue(14)
-        self.bg.clear()
-        self.opacity.setValue(18)
-        self.sidebar.setChecked(True)
-
-    def save(self):
-        try:
-            self.s.update(
-                theme=["light", "dark", "system"][self.theme.currentIndex()],
-                font_size=self.font.value(),
-                background=self.bg.text(),
-                background_opacity=self.opacity.value(),
-                confirm_attachments=self.attach.isChecked(),
-                sidebar_visible=self.sidebar.isChecked(),
-            )
-            if self.s["background"]:
-                src = Path(self.s["background"])
-                if QPixmap(str(src)).isNull():
-                    raise ValueError("背景图片无法读取")
-                dest = (
-                    self.win.store.account_dir(self.win.account)
-                    / "界面资源"
-                    / ("背景" + src.suffix.lower())
-                )
-                if src.resolve() != dest.resolve():
-                    shutil.copy2(src, dest)
-                self.s["background"] = str(dest)
-            self.win.store.save_settings(
-                self.win.account, redact(self.s, self.win.known_secrets())
-            )
-            self.win.settings = self.s
-            if self.win.project:
-                self.win.project.config["rules"] = self.rules.toPlainText()
-                self.win.project.config.setdefault("connections", {})["7"] = (
-                    self.planner.currentData()
-                )
-                self.win.project.save_config()
-            self.win.apply_theme()
-            self.accept()
-        except Exception as e:
-            self.win.error(e)
-
-    def export_settings(self):
-        p, _ = QFileDialog.getSaveFileName(
-            self, "导出设置", "账户设置.json", "JSON (*.json)"
-        )
-        if p:
-            try:
-                self.win.store.export_settings(
-                    self.win.account, p, self.win.known_secrets()
-                )
-                self.win.info("已导出保存的设置、连接定义和模板，不包含凭据")
-            except Exception as e:
-                self.win.error(e)
-
-    def import_settings(self):
-        p, _ = QFileDialog.getOpenFileName(self, "导入设置", "", "JSON (*.json)")
-        if p:
-            try:
-                self.win.store.import_settings(self.win.account, p)
-                self.accept()
-            except Exception as e:
-                self.win.error(e)
+from .panels import AccountDialog, FloatingAssistant, SettingsPanel
+from .prompts import parse_object, validate_assets, validate_scenes
 
 
 class Window(QMainWindow):
     def __init__(self, root):
         super().__init__()
-        self.store = Store(root)
-        self.account = self.store.accounts[0]
-        self.settings = self.store.settings(self.account)
+        self.store = Store(root, create_default=False)
+        self.account = None
+        self.settings = copy.deepcopy(DEFAULTS)
         self.project = None
         self.sid = None
         self.scene_id = None
         self.node = 0
         self.data = None
-        self.busy = False
         self.worker = None
+        self.busy = False
         self.session_keys = {}
         self.pending_attachments = []
         self.node_buttons = []
-        self.setWindowTitle("墨境 · 小说智能可视化  |  基础测试版 0.2")
+        self.settings_page = None
+        self.image_defaults_cache = {}
+        self._navigating = False
+        self._closing = False
+        self._card_columns = None
+        self._runtime_loading = False
+        self.setWindowTitle("墨境 · 小说智能可视化 | 0.3.0")
         self.resize(1440, 940)
-        self.setMinimumSize(1080, 730)
+        self.setMinimumSize(1000, 680)
+        self.runtime_config = QWidget(self)
+        self.runtime_config.hide()
+        self.account_combo = QComboBox(self.runtime_config)
+        self.account_combo.currentIndexChanged.connect(self.switch_account)
         self.bg = Backdrop()
         self.setCentralWidget(self.bg)
         outer = QVBoxLayout(self.bg)
@@ -354,61 +178,87 @@ class Window(QMainWindow):
         outer.setSpacing(0)
         top = QFrame()
         top.setObjectName("topbar")
-        h = QHBoxLayout(top)
-        h.setContentsMargins(24, 15, 24, 15)
-        h.addWidget(button("☰", self.toggle_sidebar))
-        h.addWidget(label("墨境  /  NOVEL STUDIO", "brand"))
-        h.addStretch()
-        self.account_combo = QComboBox()
-        self.account_combo.setMinimumWidth(130)
-        self.account_combo.currentIndexChanged.connect(self.switch_account)
-        h.addWidget(self.account_combo)
-        h.addWidget(button("账户管理", self.manage_accounts))
-        h.addWidget(button("⚙  设置", self.open_settings))
+        top.setFixedHeight(36)
+        t = QHBoxLayout(top)
+        t.setContentsMargins(12, 1, 12, 1)
+        t.addStretch()
+        self.user_label = label("访客 · 未登录", "muted")
+        t.addWidget(self.user_label)
+        self.theme_button = button("明 / 暗", self.toggle_theme)
+        self.theme_button.setStyleSheet("padding:2px 9px;min-height:20px;")
+        t.addWidget(self.theme_button)
         outer.addWidget(top)
         body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
         outer.addLayout(body, 1)
-        side = QFrame()
-        self.side = side
-        side.setObjectName("sidebar")
-        side.setFixedWidth(190)
-        sl = QVBoxLayout(side)
-        sl.setContentsMargins(18, 25, 18, 20)
-        sl.addWidget(label("创作空间", "eyebrow"))
-        self.nav = []
-        for i, t in enumerate(
-            [
-                "◈  片段工作台",
-                "▤  原文阅读",
-                "◇  共享资产库",
-                "▧  插图生成",
-                "◷  任务历史",
-                "▱  项目文件",
-            ]
-        ):
-            b = button(t, lambda checked=False, k=i: self.navigate(k))
+        self.side = QFrame()
+        self.side.setObjectName("sidebar")
+        self.side.setFixedWidth(174)
+        sl = QVBoxLayout(self.side)
+        sl.setContentsMargins(10, 12, 10, 12)
+        self.brand = label("墨境", "brand")
+        sl.addWidget(self.brand)
+        self.system_buttons = []
+        for symbol, title, fn in [
+            ("☰", "收起侧栏", self.toggle_sidebar),
+            ("▣", "项目与进度", self.project_dialog),
+            ("○", "用户 / 登录", self.choose_account),
+            ("⚙", "设置", self.open_settings),
+            ("◷", "任务与历史", lambda: self.navigate(4)),
+            ("▱", "项目文件", lambda: self.navigate(5)),
+        ]:
+            b = button(symbol + "  " + title, fn)
             b.setProperty("nav", True)
+            b.setToolTip(title)
             sl.addWidget(b)
-            self.nav.append(b)
+            self.system_buttons.append((b, symbol, title))
+        self.projects_combo = QComboBox()
+        self.projects_combo.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.projects_combo.setMinimumContentsLength(8)
+        self.projects_combo.addItem("选择账户后打开项目", None)
+        self.projects_combo.currentIndexChanged.connect(self.switch_project)
+        sl.addWidget(self.projects_combo)
+        self.progress_label = label("选择本地账户后查看制作进度", "muted")
+        sl.addWidget(self.progress_label)
         sl.addStretch()
-        sl.addWidget(label("每一步，由你确认。\n本地保存 · 模型自选", "muted"))
-        body.addWidget(side)
+        self.account_manage_button = button("账户管理", self.manage_accounts)
+        sl.addWidget(self.account_manage_button)
+        body.addWidget(self.side)
         center = QWidget()
         cl = QVBoxLayout(center)
-        cl.setContentsMargins(24, 20, 24, 15)
-        cl.setSpacing(14)
+        cl.setContentsMargins(18, 10, 18, 8)
+        cl.setSpacing(10)
         body.addWidget(center, 1)
-        ph = QHBoxLayout()
-        self.projects_combo = QComboBox()
-        self.projects_combo.setMinimumWidth(230)
-        self.projects_combo.currentIndexChanged.connect(self.switch_project)
-        ph.addWidget(self.projects_combo, 1)
-        ph.addWidget(button("＋ 新建项目", self.new_project))
-        ph.addWidget(button("导入小说片段", self.import_segment, True))
-        ph.addWidget(button("备份项目", self.backup))
-        ph.addWidget(button("恢复备份", self.restore_backup))
-        cl.addLayout(ph)
+        self.work_tabs = QTabBar()
+        self.work_tabs.setExpanding(False)
+        self.work_tabs.setUsesScrollButtons(True)
+        self.tab_pages = [0, 2, 3, 6, 1, 4, 5, 7]
+        for name in [
+            "原文与情节",
+            "视觉资产库",
+            "场景插图",
+            "成果集",
+            "原文阅读",
+            "任务与历史",
+            "项目文件",
+            "设置",
+        ]:
+            self.work_tabs.addTab(name)
+        for i in range(4, 8):
+            self.work_tabs.setTabVisible(i, False)
+        self.work_tabs.currentChanged.connect(
+            lambda i: self.navigate(self.tab_pages[i]) if not self._navigating else None
+        )
+        cl.addWidget(self.work_tabs)
+        self.stage_tabs = self.work_tabs
+        self.stage_order = [0, 1, 5, 2, 3, 4, 6, 7]
+        self.location_label = label(
+            "访客工作区 · 开始操作时选择或创建本地账户", "muted"
+        )
+        cl.addWidget(self.location_label)
         self.pages = QStackedWidget()
         cl.addWidget(self.pages, 1)
         self.build_workbench()
@@ -417,25 +267,31 @@ class Window(QMainWindow):
         self.build_images()
         self.build_jobs()
         self.build_files()
-        self.pages.widget(0).layout().removeWidget(self.stage_tabs)
-        self.stage_tabs.setParent(center)
-        cl.insertWidget(1, self.stage_tabs)
-        self.status = label("就绪 · 数据保存在你选择的目录", "muted")
+        self.build_results()
+        self.pages.addWidget(QWidget())
+        self.status = label("就绪 · 未登录，不读取个人项目或密钥", "muted")
         cl.addWidget(self.status)
-        self.reload_accounts()
-        self.reload_projects()
+        self.build_assistant()
+        self.param_host = self.runtime_config
+        self.param_layout = QVBoxLayout(self.runtime_config)
+        self.param_form = None
+        self.ai_launcher = button("✦ AI 助手", self.show_assistant, True)
+        self.ai_launcher.setParent(self.bg)
+        self.ai_launcher.setFixedSize(140, 44)
+        self.ai_launcher.setStyleSheet("border-radius:20px;")
+        self.ai_launcher.raise_()
+        self.show_node()
         self.apply_theme()
         self.navigate(0)
-        self.side.setVisible(self.settings["sidebar_visible"])
         QApplication.styleHints().colorSchemeChanged.connect(self.system_theme_changed)
+        QTimer.singleShot(0, self.place_launcher)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if hasattr(self, "pages"):
-            QTimer.singleShot(0, self.fit_workbench)
-
-    def fit_workbench(self):
-        pass
+        if hasattr(self, "ai_launcher"):
+            self.place_launcher()
+        if hasattr(self, "module_grid"):
+            QTimer.singleShot(0, self.reflow_cards)
 
     def info(self, t):
         QMessageBox.information(self, "墨境", t)
@@ -452,144 +308,65 @@ class Window(QMainWindow):
         return True
 
     def require_project(self):
+        if not self.ensure_account():
+            return False
         if not self.project:
-            self.info("请先新建或选择项目")
+            self.info("请从左侧“项目与进度”新建或打开小说项目。")
             return False
         return True
 
     def build_workbench(self):
         page = QWidget()
         l = QVBoxLayout(page)
-        l.setContentsMargins(0, 0, 0, 0)
+        l.setContentsMargins(0, 0, 0, 54)
         l.setSpacing(12)
-        bar = QHBoxLayout()
-        bar.addWidget(label("原文片段"))
+        row = QHBoxLayout()
+        row.addWidget(label("原文与情节", "hero"), 1)
+        row.addWidget(button("导入原文", self.import_segment))
+        row.addWidget(button("智能拆分", self.request_split, True))
+        l.addLayout(row)
+        row = QHBoxLayout()
         self.segments_combo = QComboBox()
-        self.segments_combo.currentIndexChanged.connect(self.switch_segment)
-        bar.addWidget(self.segments_combo, 2)
-        bar.addWidget(label("当前情节"))
-        self.scene_combo = QComboBox()
-        self.scene_combo.currentIndexChanged.connect(self.switch_scene)
-        bar.addWidget(self.scene_combo, 2)
-        bar.addWidget(button("＋ 粘贴片段", self.paste_segment))
-        l.addLayout(bar)
-        self.stage_order = [0, 1, 5, 2, 3, 4, 6, 7]
-        self.stage_tabs = QTabBar()
-        self.stage_tabs.setExpanding(False)
-        self.stage_tabs.setUsesScrollButtons(True)
-        for i in self.stage_order:
-            self.stage_tabs.addTab(NODES[i])
-        self.stage_tabs.currentChanged.connect(
-            lambda index: self.select_node(self.stage_order[index])
+        self.segments_combo.setMinimumContentsLength(12)
+        self.segments_combo.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon
         )
-        l.addWidget(self.stage_tabs)
-        self.workspace_split = QSplitter(Qt.Horizontal)
-        self.module_panel = QFrame()
-        self.module_panel.setObjectName("panel")
-        ml = QVBoxLayout(self.module_panel)
-        ml.setContentsMargins(16, 16, 16, 16)
-        self.module_title = label("情节模块", "section")
-        ml.addWidget(self.module_title)
-        self.module_tools = QHBoxLayout()
+        self.segments_combo.currentIndexChanged.connect(self.switch_segment)
+        row.addWidget(self.segments_combo, 2)
+        self.scene_combo = QComboBox()
+        self.scene_combo.setMinimumContentsLength(10)
+        self.scene_combo.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.scene_combo.currentIndexChanged.connect(self.switch_scene)
+        row.addWidget(self.scene_combo, 2)
         self.depth = QComboBox()
         self.depth.addItems(["粗 · 主要事件", "中 · 连续场景", "细 · 插图瞬间"])
         self.depth.setCurrentIndex(1)
-        self.module_tools.addWidget(self.depth)
-        self.module_tools.addWidget(button("请求 AI 拆分", self.request_split, True))
-        self.module_tools.addWidget(button("手工新增", self.add_scene))
-        ml.addLayout(self.module_tools)
+        row.addWidget(self.depth)
+        l.addLayout(row)
+        row = QHBoxLayout()
+        row.addWidget(button("＋ 粘贴片段", self.paste_segment))
+        row.addWidget(button("＋ 手工情节", self.add_scene))
+        row.addWidget(button("查看原文", lambda: self.navigate(1)))
+        row.addWidget(button("查看归档版本", self.show_archived_scenes))
+        row.addStretch()
+        l.addLayout(row)
         self.scope_note = label("", "muted")
-        ml.addWidget(self.scope_note)
+        l.addWidget(self.scope_note)
+        self.module_title = label("情节模块", "section")
+        l.addWidget(self.module_title)
         self.module_cards = QWidget()
         self.module_grid = QGridLayout(self.module_cards)
         self.module_grid.setContentsMargins(0, 0, 0, 0)
+        self.module_grid.setSpacing(14)
         self.module_grid.setAlignment(Qt.AlignTop)
         self.module_grid.setSizeConstraint(QLayout.SetMinimumSize)
-        ml.addWidget(scroll(self.module_cards), 1)
-        self.excerpt = QPlainTextEdit()
+        l.addWidget(scroll(self.module_cards), 1)
+        self.excerpt = QPlainTextEdit(self.runtime_config)
         self.excerpt.setReadOnly(True)
-        self.excerpt.setVisible(False)
-        self.include_text = QCheckBox("附带原文（情节节点仅发送当前情节范围）")
-        self.include_text.setChecked(True)
-        self.include_assets = QCheckBox("附带当前情节已关联的资产文字")
-        self.include_assets.setChecked(True)
-        self.include_refs = QCheckBox("附带关联资产主图（需视觉连接，发送前确认）")
-        self.include_refs.setChecked(False)
-        ml.addWidget(self.include_text)
-        ml.addWidget(self.include_assets)
-        ml.addWidget(self.include_refs)
         self.context_count = label("", "muted")
-        ml.addWidget(self.context_count)
-        self.workspace_split.addWidget(self.module_panel)
-        right = QFrame()
-        right.setObjectName("panel")
-        rl = QVBoxLayout(right)
-        rl.setContentsMargins(16, 16, 16, 16)
-        title = QHBoxLayout()
-        self.node_title = label("", "section")
-        title.addWidget(self.node_title, 1)
-        title.addWidget(button("预览输入", self.preview_input))
-        title.addWidget(button("导出", self.export_text))
-        rl.addLayout(title)
-        self.tabs = QTabWidget()
-        rl.addWidget(self.tabs, 1)
-        chat = QWidget()
-        chl = QVBoxLayout(chat)
-        chl.setContentsMargins(0, 8, 0, 0)
-        self.conversation = QTextEdit()
-        self.conversation.setReadOnly(True)
-        chl.addWidget(self.conversation, 1)
-        self.message = DropEdit()
-        self.message.setPlaceholderText(
-            "补充要求，可拖入文本或图片作为本轮附件；发送前可预览实际输入。"
-        )
-        self.message.setMinimumHeight(75)
-        self.message.setMaximumHeight(110)
-        self.message.filesDropped.connect(self.drop_chat_files)
-        chl.addWidget(self.message)
-        self.model_badge = label("", "muted")
-        chl.addWidget(self.model_badge)
-        self.attachment_label = label("未附加文件", "muted")
-        chl.addWidget(self.attachment_label)
-        row = QHBoxLayout()
-        row.addWidget(button("＋ 附件", self.add_attachments))
-        row.addWidget(button("清除本轮附件", self.clear_attachments))
-        row.addStretch()
-        self.retry_btn = button("重试失败", self.retry_text)
-        row.addWidget(self.retry_btn)
-        self.stop = button("停止等待", self.cancel_task)
-        row.addWidget(self.stop)
-        self.send = button("发送", self.send_message, True)
-        row.addWidget(self.send)
-        chl.addLayout(row)
-        self.tabs.addTab(chat, "讨论")
-        final_page = QWidget()
-        fl = QVBoxLayout(final_page)
-        self.final = DropEdit()
-        self.final.setPlaceholderText(
-            "人工定稿，或采用模型输出。情节/资产结构化候选可在校验后预览入库。"
-        )
-        self.final.textChanged.connect(self.final_changed)
-        self.final.filesDropped.connect(self.drop_final_files)
-        fl.addWidget(self.final, 1)
-        row = QHBoxLayout()
-        row.addWidget(button("采用最近输出", self.use_last))
-        row.addWidget(button("保存草稿", self.save_draft))
-        self.confirm_btn = button("确认方案", self.confirm_final, True)
-        row.addWidget(self.confirm_btn)
-        fl.addLayout(row)
-        self.structured_btn = button(
-            "校验并预览结构化结果", self.preview_structured, True
-        )
-        fl.addWidget(self.structured_btn)
-        self.tabs.addTab(final_page, "方案与入库")
-        self.param_host = QWidget()
-        self.param_layout = QVBoxLayout(self.param_host)
-        self.tabs.addTab(scroll(self.param_host), "连接 · 提示词")
-        self.workspace_split.addWidget(right)
-        self.workspace_split.setSizes([560, 640])
-        self.workspace_split.setChildrenCollapsible(False)
-        l.addWidget(self.workspace_split, 1)
+        l.addWidget(self.context_count)
         self.pages.addWidget(page)
 
     def drop_original_files(self, paths):
@@ -630,24 +407,22 @@ class Window(QMainWindow):
     def build_assets(self):
         page = QWidget()
         l = QVBoxLayout(page)
-        l.addWidget(label("项目共享资产", "hero"))
-        l.addWidget(
-            label(
-                "按人物、场景、道具分类；卡片可编辑，主图自动生成缩略图。修改共享资产将提示下游复核。",
-                "muted",
-            )
-        )
+        l.setContentsMargins(0, 0, 0, 54)
         row = QHBoxLayout()
+        row.addWidget(label("视觉资产库", "hero"), 1)
+        row.addWidget(button("解析当前情节资产", lambda: self.discuss_node(1)))
         row.addWidget(button("＋ 新建资产", self.add_asset, True))
-        row.addStretch()
         l.addLayout(row)
         self.asset_categories = QTabBar()
-        for name in ("全部", "人物", "场景", "道具"):
-            self.asset_categories.addTab(name)
+        self.asset_categories.setExpanding(False)
+        for kind in ("全部", "人物", "场景", "道具"):
+            self.asset_categories.addTab(kind)
         self.asset_categories.currentChanged.connect(lambda _: self.refresh_assets())
         l.addWidget(self.asset_categories)
         self.asset_cards = QWidget()
         self.asset_grid = QGridLayout(self.asset_cards)
+        self.asset_grid.setContentsMargins(0, 0, 0, 0)
+        self.asset_grid.setSpacing(14)
         self.asset_grid.setAlignment(Qt.AlignTop)
         self.asset_grid.setSizeConstraint(QLayout.SetMinimumSize)
         l.addWidget(scroll(self.asset_cards), 1)
@@ -656,75 +431,68 @@ class Window(QMainWindow):
     def build_images(self):
         page = QWidget()
         l = QVBoxLayout(page)
-        l.addWidget(label("场景插图工作区", "hero"))
-        self.image_scope_label = label("先选择情节。", "muted")
+        l.setContentsMargins(0, 0, 0, 54)
+        row = QHBoxLayout()
+        row.addWidget(label("场景插图", "hero"), 1)
+        row.addWidget(button("讨论场景方案", lambda: self.discuss_node(2)))
+        self.generate_btn = button("检查并生成", self.generate_image, True)
+        row.addWidget(self.generate_btn)
+        l.addLayout(row)
+        self.image_scope_label = label("请先选择情节", "muted")
         l.addWidget(self.image_scope_label)
         row = QHBoxLayout()
-        self.image_connections = QComboBox()
+        self.image_scene_picker = QComboBox()
+        self.image_scene_picker.currentIndexChanged.connect(self.pick_image_scene)
+        row.addWidget(self.image_scene_picker, 1)
+        row.addWidget(button("载入确认提示词", self.load_confirmed_prompt))
+        row.addWidget(button("查看 / 编辑最终提示词", self.edit_generation_prompt))
+        l.addLayout(row)
+        self.image = label(
+            "尚无候选插图\n\n选择情节，讨论方案并确认提示词后生成。", "imagePreview"
+        )
+        self.image.setAlignment(Qt.AlignCenter)
+        self.image.setMinimumHeight(230)
+        self.image.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        l.addWidget(self.image, 3)
+        row = QHBoxLayout()
+        self.image_list = QComboBox()
+        self.image_list.currentIndexChanged.connect(self.show_image)
+        row.addWidget(self.image_list, 1)
+        row.addWidget(button("审核当前图片", lambda: self.discuss_node(6)))
+        row.addWidget(button("选为正式插图", self.choose_result))
+        row.addWidget(button("用作资产参考图", self.result_as_asset_image))
+        l.addLayout(row)
+        self.image_model_label = label("图片模型配置在设置中维护", "muted")
+        l.addWidget(self.image_model_label)
+        row = QHBoxLayout()
+        row.addWidget(label("本场景引用的资产", "section"), 1)
+        row.addWidget(button("调整关联", self.link_asset))
+        l.addLayout(row)
+        self.image_assets = QWidget()
+        self.image_asset_grid = QGridLayout(self.image_assets)
+        self.image_asset_grid.setContentsMargins(0, 0, 0, 0)
+        self.image_asset_grid.setAlignment(Qt.AlignTop)
+        self.image_asset_grid.setSizeConstraint(QLayout.SetMinimumSize)
+        asset_scroll = scroll(self.image_assets)
+        asset_scroll.setMinimumHeight(150)
+        l.addWidget(asset_scroll, 2)
+        self.comfy_prompt = DropEdit(self.runtime_config)
+        self.comfy_prompt.filesDropped.connect(self.drop_image_prompt)
+        self.image_connections = QComboBox(self.runtime_config)
         self.image_connections.currentIndexChanged.connect(
             self.image_connection_changed
         )
-        row.addWidget(self.image_connections, 1)
-        row.addWidget(button("配置图片连接 / 密钥", self.edit_image_connection))
-        row.addWidget(button("新建图片连接", self.new_image_connection))
-        row.addWidget(button("生成前讨论 / 检查", lambda: self.navigate(0)))
-        l.addLayout(row)
-        split = QSplitter(Qt.Horizontal)
-        assets = QWidget()
-        al = QVBoxLayout(assets)
-        al.addWidget(label("本场景资产 · 点击可编辑", "section"))
-        self.image_assets = QWidget()
-        self.image_asset_grid = QGridLayout(self.image_assets)
-        self.image_asset_grid.setAlignment(Qt.AlignTop)
-        self.image_asset_grid.setSizeConstraint(QLayout.SetMinimumSize)
-        al.addWidget(scroll(self.image_assets), 1)
-        al.addWidget(button("管理关联资产", lambda: self.navigate(0)))
-        split.addWidget(assets)
-        controls = QWidget()
-        ll = QVBoxLayout(controls)
-        self.comfy_prompt = DropEdit()
-        self.comfy_prompt.setPlaceholderText("填写最终提示词；拖入TXT/MD可插入文字")
-        self.comfy_prompt.setMinimumHeight(100)
-        self.comfy_prompt.filesDropped.connect(self.drop_image_prompt)
-        ll.addWidget(self.comfy_prompt)
-        ll.addWidget(button("载入已确认提示词", self.load_confirmed_prompt))
-        self.image_size = QComboBox()
-        self.image_size.addItems(["1024x1024", "1536x1024", "1024x1536"])
-        ll.addWidget(self.image_size)
-        self.workflow = DropEdit()
-        self.workflow.setPlaceholderText("ComfyUI API 格式 JSON")
+        self.workflow = DropEdit(self.runtime_config)
         self.workflow.filesDropped.connect(self.drop_workflow)
-        ll.addWidget(button("导入 API 工作流", self.import_workflow))
-        ll.addWidget(self.workflow, 1)
         self.mapping = DropEdit('{\n  "prompt": ["6", "text"]\n}')
-        self.mapping.setMaximumHeight(100)
-        ll.addWidget(
-            label("映射：prompt、seed、reference_1… → [节点ID, 输入名]", "muted")
-        )
-        ll.addWidget(self.mapping)
-        self.seed = QSpinBox()
+        self.mapping.setParent(self.runtime_config)
+        self.mapping.setMaximumHeight(130)
+        self.workflow.setMinimumHeight(180)
+        self.seed = QSpinBox(self.runtime_config)
         self.seed.setRange(0, 2147483647)
         self.seed.setValue(42)
-        ll.addWidget(self.seed)
-        self.generate_btn = button("提交图片任务", self.generate_image, True)
-        ll.addWidget(self.generate_btn)
-        ll.addWidget(button("停止等待", self.cancel_task))
-        split.addWidget(controls)
-        preview = QWidget()
-        pl = QVBoxLayout(preview)
-        self.image = label("图片将在这里显示", "imagePreview")
-        self.image.setAlignment(Qt.AlignCenter)
-        self.image.setMinimumSize(200, 180)
-        pl.addWidget(self.image, 1)
-        self.image_list = QComboBox()
-        self.image_list.currentIndexChanged.connect(self.show_image)
-        pl.addWidget(self.image_list)
-        pl.addWidget(button("选为最终成果", self.choose_result))
-        pl.addWidget(button("用作当前资产参考图", self.result_as_asset_image))
-        pl.addWidget(button("打开图片目录", self.open_image_folder))
-        split.addWidget(preview)
-        split.setSizes([340, 450, 380])
-        l.addWidget(split, 1)
+        self.image_size = QComboBox(self.runtime_config)
+        self.image_size.addItems(["1024x1024", "1536x1024", "1024x1536"])
         self.pages.addWidget(page)
 
     def build_jobs(self):
@@ -775,35 +543,59 @@ class Window(QMainWindow):
         self.pages.addWidget(page)
 
     def navigate(self, i):
+        if self._navigating:
+            return
+        if i not in range(8):
+            return
+        if i in (4, 5, 7) and not self.ensure_account():
+            self.sync_tabs()
+            return
+        current = self.pages.currentIndex()
+        if (
+            current == 7
+            and i != 7
+            and self.settings_page
+            and not self.settings_page.settle()
+        ):
+            self.sync_tabs()
+            return
+        if i == 7:
+            if self.busy:
+                self.info("任务执行中，稍后再修改设置。")
+                self.sync_tabs()
+                return
+            self.ensure_settings_panel()
+        self._navigating = True
         self.pages.setCurrentIndex(i)
-        for j, b in enumerate(self.nav):
-            b.setProperty("active", i == j)
-            b.style().unpolish(b)
-            b.style().polish(b)
-        if i == 2:
+        idx = self.tab_pages.index(i)
+        self.work_tabs.setTabVisible(idx, True)
+        self.work_tabs.setCurrentIndex(idx)
+        self._navigating = False
+        if i == 0:
+            self.render_modules()
+        elif i == 2:
             self.refresh_assets()
-        if i == 4:
-            self.refresh_jobs()
-        if i == 5:
-            self.refresh_files()
-        if i == 3:
+        elif i == 3:
             self.refresh_image_assets()
+            self.refresh_candidates()
+        elif i == 4:
+            self.refresh_jobs()
+        elif i == 5:
+            self.refresh_files()
+        elif i == 6:
+            self.refresh_results()
+        self.update_location()
+        self.place_launcher()
 
     def reload_accounts(self):
         self.account_combo.blockSignals(True)
         self.account_combo.clear()
-        for a in self.store.accounts:
-            self.account_combo.addItem(a["name"], a["id"])
-        self.account_combo.setCurrentIndex(
-            next(
-                (
-                    i
-                    for i, a in enumerate(self.store.accounts)
-                    if a["id"] == self.account["id"]
-                ),
-                0,
+        if self.account:
+            for a in self.store.accounts:
+                self.account_combo.addItem(a["name"], a["id"])
+            self.account_combo.setCurrentIndex(
+                self.account_combo.findData(self.account["id"])
             )
-        )
         self.account_combo.blockSignals(False)
 
     def switch_account(self, index):
@@ -812,43 +604,52 @@ class Window(QMainWindow):
         if not self.guard():
             self.reload_accounts()
             return
-        self.save_draft(silent=True)
-        self.account = self.store.accounts[index]
-        self.settings = self.store.settings(self.account)
-        self.reload_projects()
-        self.apply_theme()
-        self.side.setVisible(self.settings["sidebar_visible"])
+        aid = self.account_combo.itemData(index)
+        if aid:
+            self.activate_account(aid)
 
     def manage_accounts(self):
-        if not self.guard():
+        if not self.ensure_account() or not self.guard():
             return
         action, ok = QInputDialog.getItem(
             self,
             "账户管理",
             "操作",
-            ["创建账户", "修改账户名称", "删除当前账户（资料归档）"],
+            [
+                "选择 / 创建账户",
+                "修改当前名称",
+                "退出到访客",
+                "删除当前账户（资料归档）",
+            ],
             0,
             False,
         )
         if not ok:
             return
-        try:
-            self.save_draft(silent=True)
-            if action.startswith("删除"):
-                if len(self.store.accounts) == 1:
-                    self.info("至少保留一个账户")
-                    return
-                if (
-                    QMessageBox.question(
-                        self,
-                        "删除账户",
-                        "账户资料归档保留，并删除各连接的系统凭据。继续吗？",
-                    )
-                    != QMessageBox.Yes
-                ):
-                    return
-                from .connections import credential_id
+        if action == "选择 / 创建账户":
+            self.choose_account()
+        elif action == "退出到访客":
+            self.logout()
+        elif action == "修改当前名称":
+            name, ok = QInputDialog.getText(
+                self, "账户名称", "名称", text=self.account["name"]
+            )
+            if ok:
+                try:
+                    self.store.rename_account(self.account, name)
+                    self.user_label.setText(name)
+                    self.reload_accounts()
+                except Exception as e:
+                    self.error(e)
+        elif (
+            QMessageBox.question(
+                self, "删除账户", "归档资料并清除各配置凭据，是否继续？"
+            )
+            == QMessageBox.Yes
+        ):
+            from .connections import credential_id
 
+            try:
                 for c in self.store.connections(self.account):
                     slot = credential_id(self.account["id"], c["id"])
                     if get_key(slot):
@@ -857,54 +658,32 @@ class Window(QMainWindow):
                 if get_key(self.account["id"]):
                     set_key(self.account["id"], "")
                 self.session_keys.pop(self.account["id"], None)
-                self.store.delete_account(self.account)
-                self.account = self.store.accounts[0]
-            else:
-                name, ok = QInputDialog.getText(
-                    self,
-                    "账户名称",
-                    "名称",
-                    text="" if action.startswith("创建") else self.account["name"],
-                )
-                if not ok:
-                    return
-                if action.startswith("创建"):
-                    self.account = self.store.create_account(name)
-                else:
-                    self.store.rename_account(self.account, name)
-            self.settings = self.store.settings(self.account)
-            self.reload_accounts()
-            self.reload_projects()
-            self.apply_theme()
-            self.side.setVisible(self.settings["sidebar_visible"])
-        except Exception as e:
-            self.error(e)
+                old = self.account
+                self.logout()
+                self.store.delete_account(old)
+            except Exception as e:
+                self.error(e)
 
     def open_settings(self):
-        if not self.guard():
+        if not self.guard() or not self.ensure_account():
             return
         self.save_draft(silent=True)
-        SettingsDialog(self).exec()
-        self.settings = self.store.settings(self.account)
-        if self.project:
-            self.project.secrets = self.known_secrets()
-        self.apply_theme()
-        self.side.setVisible(self.settings["sidebar_visible"])
-        self.show_node()
+        self.navigate(7)
 
     def reload_projects(self, select=None):
         self.projects_combo.blockSignals(True)
         self.projects_combo.clear()
-        for p in self.store.projects(self.account):
-            try:
-                meta = json.loads(p.read_text("utf-8"))
-                self.projects_combo.addItem(meta["name"], str(p.parent.parent))
-            except Exception:
-                pass
-        if select:
-            for i in range(self.projects_combo.count()):
-                if self.projects_combo.itemData(i) == str(select):
-                    self.projects_combo.setCurrentIndex(i)
+        if self.account:
+            for p in self.store.projects(self.account):
+                try:
+                    meta = json.loads(p.read_text("utf-8"))
+                    self.projects_combo.addItem(meta["name"], str(p.parent.parent))
+                except Exception:
+                    pass
+            if select:
+                for i in range(self.projects_combo.count()):
+                    if self.projects_combo.itemData(i) == str(select):
+                        self.projects_combo.setCurrentIndex(i)
         self.projects_combo.blockSignals(False)
         self.switch_project(self.projects_combo.currentIndex())
 
@@ -918,7 +697,20 @@ class Window(QMainWindow):
                     self.projects_combo.setCurrentIndex(n)
             self.projects_combo.blockSignals(False)
             return
+        if (
+            self.settings_page
+            and self.pages.currentIndex() == 7
+            and not self.settings_page.settle()
+        ):
+            self.projects_combo.blockSignals(True)
+            if self.project:
+                self.projects_combo.setCurrentIndex(
+                    self.projects_combo.findData(str(self.project.path))
+                )
+            self.projects_combo.blockSignals(False)
+            return
         self.save_draft(silent=True)
+        self.reset_settings_panel()
         if self.project:
             self.project.close()
         self.project = None
@@ -927,31 +719,29 @@ class Window(QMainWindow):
         self.data = None
         self.clear_attachments()
         self.image_list.clear()
-        self.image.setText("图片将在这里显示")
-        self.workflow.clear()
+        self.image.setText("尚无候选插图")
         self.comfy_prompt.clear()
-        if i >= 0:
+        if self.account and i >= 0 and self.projects_combo.itemData(i):
             try:
                 self.project = Project(self.projects_combo.itemData(i))
                 self.project.secrets = self.known_secrets()
             except Exception as e:
                 self.error(e)
         self.reload_segments()
+        self.reload_image_connections()
+        self.load_image_runtime()
         self.refresh_assets()
         self.refresh_jobs()
         self.refresh_files()
-        self.reload_image_connections()
-        if self.project:
-            for j in reversed(self.project.jobs()):
-                for rel in j.get("results", []):
-                    path = self.project.path / rel
-                    if path.exists():
-                        self.image_list.addItem(path.name, str(path))
+        self.refresh_results()
+        self.refresh_progress()
+        self.update_location()
+        self.refresh_candidates()
 
     def new_project(self):
-        if not self.guard():
+        if not self.guard() or not self.ensure_account():
             return
-        name, ok = QInputDialog.getText(self, "新建项目", "项目名称")
+        name, ok = QInputDialog.getText(self, "新建小说项目", "项目名称")
         if ok:
             try:
                 p = self.store.create_project(self.account, name)
@@ -974,6 +764,8 @@ class Window(QMainWindow):
         self.switch_segment(self.segments_combo.currentIndex())
 
     def switch_segment(self, i):
+        if not self.busy:
+            self.save_image_prompt()
         if not self.guard():
             self.segments_combo.blockSignals(True)
             self.segments_combo.setCurrentIndex(self.segments_combo.findData(self.sid))
@@ -989,6 +781,10 @@ class Window(QMainWindow):
         self.refresh_text()
         self.show_node()
         self.refresh_image_assets()
+        self.refresh_candidates()
+        self.load_image_prompt()
+        self.refresh_progress()
+        self.update_location()
 
     def paste_segment(self):
         if not self.guard() or not self.require_project():
@@ -1056,29 +852,18 @@ class Window(QMainWindow):
             s = next(x for x in self.project.segments() if x["id"] == self.sid)
             reveal(self.project.path / s["file"])
 
-    def select_node(self, n):
-        if not self.guard():
-            self.stage_tabs.blockSignals(True)
-            self.stage_tabs.setCurrentIndex(self.stage_order.index(self.node))
-            self.stage_tabs.blockSignals(False)
+    def select_node(self, n, go_page=True):
+        if n is None or not self.guard():
             return
         self.save_draft(silent=True)
         self.node = n
         self.clear_attachments()
-        self.stage_tabs.blockSignals(True)
-        self.stage_tabs.setCurrentIndex(self.stage_order.index(n))
-        self.stage_tabs.blockSignals(False)
+        self.task_combo.blockSignals(True)
+        self.task_combo.setCurrentIndex(self.task_combo.findData(n))
+        self.task_combo.blockSignals(False)
         self.show_node()
-        self.navigate(3 if n == 4 else 0)
-        if (
-            n == 4
-            and not self.comfy_prompt.toPlainText().strip()
-            and self.project
-            and self.scene_id
-        ):
-            d = self.project.load_node(self.scene_id, 3)
-            if d["status"] == "已确认":
-                self.comfy_prompt.setPlainText(d["final"])
+        if go_page:
+            self.navigate(3 if n == 4 else 2 if n == 1 else 0)
 
     def show_node(self):
         self.data = (
@@ -1095,53 +880,28 @@ class Window(QMainWindow):
             self.data.get("draft_attachments", []) if self.data else []
         )
         self.update_attachment_label()
-        while self.param_layout.count():
-            item = self.param_layout.takeAt(0)
-            if item.widget():
-                item.widget().hide()
-                item.widget().deleteLater()
-        p = copy.deepcopy(self.data.get("params", {}) if self.data else {})
-        if self.project:
-            if str(self.node) in self.project.config.get("connections", {}):
-                p["connection_id"] = self.project.config["connections"][str(self.node)]
-            else:
-                p.setdefault("connection_id", f"node-{self.node}")
-            if (
-                self.data
-                and p.get("provider") == "openai"
-                and not self.data.get("params", {}).get("connection_id")
-                and str(self.node) not in self.project.config.get("connections", {})
-            ):
-                cid = "migrated-" + self.project.meta["id"] + "-" + str(self.node)
-                if not any(
-                    c["id"] == cid for c in self.store.connections(self.account)
-                ):
-                    self.store.save_connection(
-                        self.account,
-                        dict(
-                            id=cid,
-                            name="旧节点配置 · " + NODES[self.node],
-                            kind="openai",
-                            endpoint=p["endpoint"],
-                            model=p.get("model", ""),
-                            vision=p.get("vision", False),
-                            legacy=True,
-                        ),
-                    )
-                p["connection_id"] = cid
-        self.param_form = NodeForm(self, self.node, p)
-        self.param_layout.addWidget(self.param_form)
-        self.model_badge.setText(self.param_form.connection_summary.text())
+        if self.param_form:
+            self.param_form.hide()
+            self.param_form.deleteLater()
+        self.param_form = (
+            NodeForm(self, self.node, self.node_parameters(self.node, self.data))
+            if self.account
+            else None
+        )
+        if self.param_form:
+            self.param_form.setParent(self.runtime_config)
+            self.param_form.hide()
+        self.model_badge.setText(
+            self.param_form.connection_summary.text()
+            if self.param_form
+            else "选择本地账户后加载语言模型配置"
+        )
         self.render_chat()
         self.update_cards()
         self.render_modules()
         self.set_busy()
         self.structured_btn.setVisible(self.node in (0, 1))
-        self.scope_note.setText(
-            "当前片段"
-            if self.node in (0, 7)
-            else "当前情节：" + (self.scene_combo.currentText() or "未选择")
-        )
+        self.update_location()
 
     def final_changed(self):
         if self.data:
@@ -1151,26 +911,8 @@ class Window(QMainWindow):
             self.update_cards()
 
     def update_cards(self):
-        for i, title in enumerate(NODES):
-            scope = self.sid if i in (0, 7) else (self.scene_id or self.sid)
-            d = (
-                (self.data if i == self.node else self.project.load_node(scope, i))
-                if self.project and self.sid
-                else None
-            )
-            status = d["status"] if d else "未开始"
-            self.stage_tabs.setTabText(
-                self.stage_order.index(i),
-                (
-                    "● "
-                    if status == "已确认"
-                    else "◌ "
-                    if status in ("需复核", "状态未知")
-                    else ""
-                )
-                + title,
-            )
-            self.stage_tabs.setTabToolTip(self.stage_order.index(i), status)
+        if self.data and self.data["status"] == "需复核":
+            self.node_title.setText(NODES[self.node] + " · 上游变更，需复核")
 
     def render_chat(self):
         if not self.data:
@@ -1483,11 +1225,13 @@ class Window(QMainWindow):
         self.send.setEnabled(bool(self.data) and not self.busy)
         self.stop.setEnabled(self.busy)
         self.confirm_btn.setEnabled(bool(self.data) and not self.busy)
-        self.generate_btn.setEnabled(not self.busy)
-        self.param_host.setEnabled(not self.busy)
-        self.image_connections.setEnabled(not self.busy)
+        self.generate_btn.setEnabled(bool(self.project) and not self.busy)
+        self.task_combo.setEnabled(not self.busy)
         self.final.setReadOnly(self.busy)
-        self.retry_btn.setEnabled(not self.busy)
+        self.retry_btn.setEnabled(bool(self.data) and not self.busy)
+        self.image_connections.setEnabled(not self.busy)
+        if self.settings_page:
+            self.settings_page.setEnabled(not self.busy)
 
     def job_progress(self, data):
         self.current_job.update(data)
@@ -1513,6 +1257,7 @@ class Window(QMainWindow):
             self.image_list.setCurrentIndex(self.image_list.count() - 1)
         self.project.save_job(j)
         self.status.setText("结果已保存，等待审核；结构化结果可采用后预览入库")
+        self.refresh_progress()
         self.update_cards()
         self.refresh_jobs()
 
@@ -1614,14 +1359,22 @@ class Window(QMainWindow):
             return
         self.clear_grid(self.asset_grid)
         if not self.project:
+            self.asset_grid.addWidget(
+                label("选择账户和小说项目后管理共享资产。", "muted"), 0, 0
+            )
             return
         kind = self.asset_categories.tabText(self.asset_categories.currentIndex())
         rows = [a for a in self.project.assets() if kind == "全部" or a["kind"] == kind]
+        cols = 3 if self.pages.width() > 1000 else 2 if self.pages.width() > 620 else 1
         for i, a in enumerate(rows):
-            self.asset_grid.addWidget(self.asset_card(a), i // 3, i % 3)
+            self.asset_grid.addWidget(self.asset_card(a), i // cols, i % cols)
         if not rows:
             self.asset_grid.addWidget(
-                label("此分类尚无资产，可手工创建或导入解析候选。"), 0, 0
+                label(
+                    "此分类暂无资产。可手工创建，或解析当前情节后审核入库。", "muted"
+                ),
+                0,
+                0,
             )
 
     def add_asset(self):
@@ -1704,7 +1457,10 @@ class Window(QMainWindow):
                 raise ValueError("请选择独立图片连接；不会自动切换")
             prompt = self.comfy_prompt.toPlainText().strip()
             if not prompt:
-                raise ValueError("请填写提示词")
+                raise ValueError("请先编辑或载入本场景的最终提示词")
+            rules = self.image_defaults_cache.get("generation_rules", "").strip()
+            if rules:
+                prompt += "\n\n" + rules
             rows = self.project.scene_assets(self.scene_id)
             issues = [
                 r["kind"] + " " + r["name"] + "：" + r["problem"]
@@ -1866,17 +1622,31 @@ class Window(QMainWindow):
 
     def choose_result(self):
         path = self.image_list.currentData()
-        if not path or not self.project:
+        if not path or not self.project or not self.scene_id:
             return
         try:
-            src = Path(path)
+            source = Path(path)
             dest = (
                 self.project.path
                 / "06_最终成果"
-                / (src.stem + "_" + uid() + src.suffix)
+                / (source.stem + "_" + uid() + source.suffix)
             )
-            shutil.copy2(src, dest)
-            self.status.setText("已保存最终成果：" + dest.name)
+            shutil.copy2(source, dest)
+            job = next(
+                (
+                    j["id"]
+                    for j in self.project.jobs()
+                    if any(
+                        str(self.project.path / p) == str(source)
+                        for p in j.get("results", [])
+                    )
+                ),
+                "",
+            )
+            self.project.register_result(self.scene_id, dest, job)
+            self.refresh_results()
+            self.refresh_progress()
+            self.status.setText("已选为正式插图：" + dest.name)
         except Exception as e:
             self.error(e)
 
@@ -1959,7 +1729,7 @@ class Window(QMainWindow):
             self.error(e)
 
     def restore_backup(self):
-        if not self.guard():
+        if not self.guard() or not self.ensure_account():
             return
         path, _ = QFileDialog.getOpenFileName(self, "恢复项目备份", "", "ZIP (*.zip)")
         if not path:
@@ -2043,6 +1813,8 @@ class Window(QMainWindow):
         QWidget {{font-family: "Microsoft YaHei UI", "Noto Sans CJK SC", "Arial";font-size:{self.settings["font_size"]}px;color:{text};}}
         QMainWindow, Backdrop {{background:{bg};}}
         QFrame#topbar,QFrame#sidebar {{background:{panel};border:0;}}
+        QFrame#topbar QPushButton {{padding:2px 9px;min-height:20px;}}
+        QLabel#assetThumb {{background:{inputbg};border:1px dashed {border};border-radius:8px;color:{muted};}}
         QFrame#topbar {{border-bottom:1px solid {border};}}
         QFrame#sidebar {{border-right:1px solid {border};}}
         QFrame#panel {{background:{panel};border:1px solid {border};border-radius:14px;}}
@@ -2073,28 +1845,39 @@ class Window(QMainWindow):
         self.bg.pix = QPixmap(self.settings["background"])
         self.bg.opacity = self.settings["background_opacity"] / 100.0
         self.bg.update()
+        if hasattr(self, "assistant"):
+            self.assistant.setStyleSheet(self.styleSheet())
 
     def closeEvent(self, event):
         if self.busy:
             self.info(
-                "任务仍在执行。请先停止等待，并等待本次网络请求结束后退出，避免丢失远端状态。"
+                "任务仍在运行，输入已保存。请先停止等待，等待本次请求返回或超时。"
             )
             event.ignore()
             return
+        if self.settings_page and not self.settings_page.settle():
+            event.ignore()
+            return
         self.save_draft(silent=True)
+        self.save_image_prompt()
+        self.assistant.hide()
+        self._closing = True
         if self.project:
             self.project.close()
         event.accept()
 
     def toggle_sidebar(self):
-        self.side.setVisible(self.side.isHidden())
-        self.settings["sidebar_visible"] = not self.side.isHidden()
-        self.store.save_settings(self.account, self.settings)
+        self.settings["sidebar_visible"] = not self.settings["sidebar_visible"]
+        self.apply_sidebar()
+        if self.account:
+            self.store.save_settings(self.account, self.settings)
 
     def scope(self):
         return self.sid if self.node in (0, 7) else (self.scene_id or self.sid)
 
     def connection_key(self, cid):
+        if not self.account:
+            return ""
         from .connections import credential_id
 
         slot = credential_id(self.account["id"], cid)
@@ -2126,6 +1909,8 @@ class Window(QMainWindow):
             self.project.secrets = self.known_secrets()
 
     def known_secrets(self):
+        if not self.account:
+            return []
         values = [
             self.session_keys.get(self.account["id"]) or get_key(self.account["id"])
         ]
@@ -2152,6 +1937,8 @@ class Window(QMainWindow):
         self.scene_combo.blockSignals(False)
 
     def switch_scene(self, index):
+        if not self.busy:
+            self.save_image_prompt()
         if not self.guard():
             self.scene_combo.blockSignals(True)
             self.scene_combo.setCurrentIndex(self.scene_combo.findData(self.scene_id))
@@ -2163,6 +1950,10 @@ class Window(QMainWindow):
         self.comfy_prompt.clear()
         self.show_node()
         self.refresh_image_assets()
+        self.refresh_candidates()
+        self.load_image_prompt()
+        self.refresh_progress()
+        self.update_location()
 
     def call_attachments(self):
         rels = list(
@@ -2292,100 +2083,104 @@ class Window(QMainWindow):
         if not hasattr(self, "module_grid"):
             return
         self.clear_grid(self.module_grid)
-        self.depth.setVisible(self.node == 0)
-        for i in range(1, self.module_tools.count()):
-            item = self.module_tools.itemAt(i)
-            if item.widget():
-                item.widget().setVisible(self.node == 0)
-        self.module_title.setText("情节模块" if self.node == 0 else "情节关联资产")
         if not self.project or not self.sid:
-            self.module_grid.addWidget(label("创建项目并导入片段，即可开始。"), 0, 0)
-            return
-        if self.node == 0:
-            for i, s in enumerate(self.project.scenes(self.sid)):
-                card = QFrame()
-                card.setObjectName("panel")
-                l = QVBoxLayout(card)
-                l.setSizeConstraint(QLayout.SetMinimumSize)
-                l.addWidget(label(s["title"], "section"))
-                l.addWidget(
-                    label(
-                        f"段落 {s['start_paragraph']}—{s['end_paragraph']} · v{s['revision']}",
-                        "muted",
-                    )
-                )
-                l.addWidget(label(s["summary"][:180]))
-                l.addWidget(label(s["source_text"][:160] + "…", "muted"))
-                row = QHBoxLayout()
-                row.addWidget(
-                    button(
-                        "进入情节", lambda checked=False, x=s["id"]: self.open_scene(x)
-                    )
-                )
-                row.addWidget(
-                    button("编辑", lambda checked=False, x=s: self.edit_scene(x))
-                )
-                l.addLayout(row)
-                self.module_grid.addWidget(card, i, 0)
             self.module_grid.addWidget(
-                button("查看归档的拆分版本", self.show_archived_scenes),
-                len(self.project.scenes(self.sid)),
+                label(
+                    "直接进入工作区。\n\n从系统侧栏选择本地账户，再新建小说项目或导入原文。",
+                    "section",
+                ),
+                0,
                 0,
             )
-        else:
-            rows = self.project.scene_assets(self.scene_id) if self.scene_id else []
-            for i, r in enumerate(rows):
-                self.module_grid.addWidget(self.asset_card(r.get("asset"), r), i, 0)
-            actions = QWidget()
-            al = QHBoxLayout(actions)
-            al.addWidget(button("关联 / 补齐资产", self.link_asset))
-            al.addWidget(
-                button(
-                    "编辑情节需求",
-                    lambda: (
-                        self.edit_scene(self.project.scene(self.scene_id))
-                        if self.scene_id
-                        else None
-                    ),
+            return
+        scenes = self.project.scenes(self.sid)
+        cols = 2 if self.pages.width() > 850 else 1
+        for i, s in enumerate(scenes):
+            card = QFrame()
+            card.setObjectName("panel")
+            l = QVBoxLayout(card)
+            l.setContentsMargins(18, 16, 18, 16)
+            l.setSizeConstraint(QLayout.SetMinimumSize)
+            l.addWidget(label(f"{i + 1:02d}  {s['title']}", "section"))
+            l.addWidget(
+                label(
+                    f"原文段落 {s['start_paragraph']}—{s['end_paragraph']} · v{s['revision']}",
+                    "muted",
                 )
             )
-            self.module_grid.addWidget(actions, len(rows), 0)
-            if not rows:
-                self.module_grid.addWidget(
-                    label(
-                        "尚未列出资产需求。可以解析资产，或编辑情节手工添加。", "muted"
-                    ),
-                    len(rows) + 1,
-                    0,
+            l.addWidget(label(s.get("summary", "")[:140] or "尚未填写摘要"))
+            quote = label(
+                s["source_text"][:90] + ("…" if len(s["source_text"]) > 90 else ""),
+                "muted",
+            )
+            l.addWidget(quote)
+            row = QHBoxLayout()
+            row.addWidget(button("编辑", lambda checked=False, x=s: self.edit_scene(x)))
+            row.addWidget(
+                button("拆分", lambda checked=False, x=s: self.split_scene(x))
+            )
+            row.addWidget(
+                button("合并", lambda checked=False, x=s: self.merge_scene(x))
+            )
+            l.addLayout(row)
+            row = QHBoxLayout()
+            row.addWidget(
+                button(
+                    "解析资产", lambda checked=False, x=s["id"]: self.discuss_node(1, x)
                 )
+            )
+            row.addWidget(
+                button(
+                    "制作此场景",
+                    lambda checked=False, x=s["id"]: self.open_scene(x),
+                    True,
+                )
+            )
+            l.addLayout(row)
+            self.module_grid.addWidget(card, i // cols, i % cols)
+        self.scope_note.setText(
+            f"当前片段：{self.segments_combo.currentText()} · {len(scenes)} 个情节模块"
+        )
 
-    def asset_card(self, a, requirement=None):
+    def asset_card(self, a, requirement=None, compact=False):
         card = QFrame()
         card.setObjectName("panel")
         l = QVBoxLayout(card)
+        l.setContentsMargins(14, 14, 14, 14)
         l.setSizeConstraint(QLayout.SetMinimumSize)
+        if not compact:
+            thumbnail = QLabel()
+            thumbnail.setAlignment(Qt.AlignCenter)
+            thumbnail.setObjectName("assetThumb")
+            thumbnail.setFixedHeight(145)
+            thumbnail.setMinimumWidth(120)
+            thumbnail.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            pix = (
+                QPixmap(str(self.project.path / a["image"]))
+                if a and a.get("image")
+                else QPixmap()
+            )
+            if pix.isNull():
+                thumbnail.setText("待添加参考图" if a else "缺少资产档案")
+            else:
+                thumbnail.setPixmap(
+                    pix.scaled(245, 140, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                )
+            l.addWidget(thumbnail)
         title = a["name"] if a else requirement["name"]
         kind = a["kind"] if a else requirement["kind"]
-        l.addWidget(label(title + "  /  " + kind, "section"))
-        if a and a.get("image"):
-            pix = QPixmap(str(self.project.path / a["image"]))
-            thumb = QLabel()
-            thumb.setAlignment(Qt.AlignCenter)
-            if not pix.isNull():
-                thumb.setPixmap(
-                    pix.scaled(260, 130, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        l.addWidget(label(title + " / " + kind, "section"))
+        if a:
+            l.addWidget(label(a["source"] + " · " + a["review"], "muted"))
+            l.addWidget(
+                label(
+                    a["description"][:65] if not compact else "引用当前档案版本",
+                    "muted",
                 )
-                l.addWidget(thumb)
-        l.addWidget(
-            label(
-                (a["description"][:180] if a else "需要补建档案，或关联已有资产"),
-                "muted",
             )
-        )
         if requirement and requirement.get("problem"):
             l.addWidget(label("⚑ " + requirement["problem"]))
         if a:
-            l.addWidget(label(a["source"] + " · " + a["review"], "muted"))
             l.addWidget(
                 button("编辑资产", lambda checked=False, x=a: self.edit_asset(x))
             )
@@ -2400,7 +2195,8 @@ class Window(QMainWindow):
 
     def open_scene(self, scene_id):
         self.scene_combo.setCurrentIndex(self.scene_combo.findData(scene_id))
-        self.select_node(1)
+        self.navigate(3)
+        self.load_image_prompt()
 
     def add_scene(self):
         if not self.guard() or not self.require_project() or not self.sid:
@@ -2440,14 +2236,15 @@ class Window(QMainWindow):
         d.exec()
 
     def request_split(self):
-        if not self.data or self.busy:
+        if not self.require_project() or self.busy or not self.sid:
             return
+        self.select_node(0, go_page=False)
+        self.show_assistant()
         self.message.setPlainText(
             "请按"
             + self.depth.currentText()
-            + "拆分当前片段，输出 scenes JSON。保留原文并完整覆盖段落，先给候选等待审核。"
+            + "拆分当前片段，完整覆盖原文，输出待审核 scenes JSON。"
         )
-        self.tabs.setCurrentIndex(0)
         self.send_message()
 
     def append_text_files(self, paths, target):
@@ -2608,42 +2405,26 @@ class Window(QMainWindow):
         self.refresh_image_assets()
         self.update_cards()
 
-    def reload_image_connections(self):
-        if not hasattr(self, "image_connections"):
-            return
-        selected = (
-            self.project.config.get("image_connection", "image-default")
-            if self.project
-            else "image-default"
+    def reload_image_connections(self, selected=None):
+        selected = selected or (
+            self.image_parameters().get("connection_id", "image-default")
+            if self.account
+            else ""
         )
         self.image_connections.blockSignals(True)
         self.image_connections.clear()
-        for c in self.store.connections(self.account):
-            if c["kind"] in ("comfy", "image_api"):
-                self.image_connections.addItem(c["name"], c["id"])
+        if self.account:
+            for c in self.store.connections(self.account):
+                if c["kind"] in ("comfy", "image_api"):
+                    self.image_connections.addItem(c["name"], c["id"])
         self.image_connections.setCurrentIndex(
             self.image_connections.findData(selected)
         )
         self.image_connections.blockSignals(False)
-        self.image_connection_changed()
+        self.refresh_model_summary()
 
     def image_connection_changed(self, *_):
-        c = next(
-            (
-                x
-                for x in self.store.connections(self.account)
-                if x["id"] == self.image_connections.currentData()
-            ),
-            None,
-        )
-        comfy = bool(c and c["kind"] == "comfy")
-        self.workflow.setVisible(comfy)
-        self.mapping.setVisible(comfy)
-        self.seed.setVisible(comfy)
-        self.image_size.setVisible(not comfy)
-        if self.project and c:
-            self.project.config["image_connection"] = c["id"]
-            self.project.save_config()
+        self.refresh_model_summary()
 
     def edit_image_connection(self):
         if not self.guard():
@@ -2673,8 +2454,6 @@ class Window(QMainWindow):
             self.reload_image_connections()
 
     def refresh_image_assets(self):
-        if not hasattr(self, "image_asset_grid"):
-            return
         self.clear_grid(self.image_asset_grid)
         scene = (
             self.project.scene(self.scene_id)
@@ -2682,14 +2461,26 @@ class Window(QMainWindow):
             else None
         )
         self.image_scope_label.setText(
-            "当前情节：" + scene["title"] if scene else "请先在情节工作区选择原文与情节"
+            "当前场景：" + scene["title"] if scene else "请先在“原文与情节”选择情节"
         )
+        self.image_scene_picker.blockSignals(True)
+        self.image_scene_picker.clear()
+        if self.project and self.sid:
+            for s in self.project.scenes(self.sid):
+                self.image_scene_picker.addItem(s["title"], s["id"])
+            self.image_scene_picker.setCurrentIndex(
+                self.image_scene_picker.findData(self.scene_id)
+            )
+        self.image_scene_picker.blockSignals(False)
         rows = self.project.scene_assets(self.scene_id) if scene else []
+        cols = 3 if self.pages.width() > 850 else 2
         for i, r in enumerate(rows):
-            self.image_asset_grid.addWidget(self.asset_card(r["asset"], r), i, 0)
+            self.image_asset_grid.addWidget(
+                self.asset_card(r["asset"], r, compact=True), i // cols, i % cols
+            )
         if not rows:
             self.image_asset_grid.addWidget(
-                label("当前情节未列出资产需求；生成前会提示。", "muted"), 0, 0
+                label("尚未建立资产关联；生成前会提示缺失项。", "muted"), 0, 0
             )
 
     def drop_image_prompt(self, paths):
@@ -2731,6 +2522,696 @@ class Window(QMainWindow):
             self.refresh_assets()
             self.render_modules()
             self.refresh_image_assets()
+
+    def place_launcher(self):
+        self.ai_launcher.move(
+            max(5, self.bg.width() - 157), max(36, self.bg.height() - 65)
+        )
+        self.ai_launcher.raise_()
+
+    def reflow_cards(self):
+        if not hasattr(self, "pages"):
+            return
+        columns = (
+            2 if self.pages.width() > 850 else 1,
+            3 if self.pages.width() > 1000 else 2 if self.pages.width() > 620 else 1,
+        )
+        if columns != self._card_columns:
+            self._card_columns = columns
+            self.render_modules()
+            self.refresh_assets()
+
+    def assistant_offset(self):
+        return QPoint(-self.assistant.width() - 22, 125)
+
+    def build_assistant(self):
+        self.assistant = FloatingAssistant(self)
+        l = QVBoxLayout(self.assistant)
+        l.setContentsMargins(14, 12, 14, 12)
+        self.assistant_context = label("尚未选择对象", "section")
+        l.addWidget(self.assistant_context)
+        row = QHBoxLayout()
+        self.task_combo = QComboBox()
+        for n in (0, 1, 5, 2, 3, 4, 6, 7):
+            self.task_combo.addItem(NODES[n], n)
+        self.task_combo.currentIndexChanged.connect(
+            lambda _: self.select_node(self.task_combo.currentData(), go_page=False)
+        )
+        row.addWidget(self.task_combo, 1)
+        row.addWidget(button("收起", self.assistant.hide))
+        l.addLayout(row)
+        self.node_title = label("", "muted")
+        l.addWidget(self.node_title)
+        self.tabs = QTabWidget()
+        l.addWidget(self.tabs, 1)
+        chat = QWidget()
+        c = QVBoxLayout(chat)
+        c.setContentsMargins(0, 8, 0, 0)
+        self.conversation = QTextEdit()
+        self.conversation.setReadOnly(True)
+        c.addWidget(self.conversation, 1)
+        self.message = DropEdit()
+        self.message.setMinimumHeight(70)
+        self.message.setMaximumHeight(115)
+        self.message.setPlaceholderText("补充要求，可拖入文档或参考图作为附件。")
+        self.message.filesDropped.connect(self.drop_chat_files)
+        c.addWidget(self.message)
+        self.attachment_label = label("未附加文件", "muted")
+        c.addWidget(self.attachment_label)
+        row = QHBoxLayout()
+        row.addWidget(button("＋ 附件", self.add_attachments))
+        row.addWidget(button("清除", self.clear_attachments))
+        row.addStretch()
+        self.retry_btn = button("重试失败", self.retry_text)
+        row.addWidget(self.retry_btn)
+        self.send = button("发送", self.send_message, True)
+        row.addWidget(self.send)
+        c.addLayout(row)
+        self.tabs.addTab(chat, "多轮讨论")
+        final_page = QWidget()
+        f = QVBoxLayout(final_page)
+        self.final = DropEdit()
+        self.final.setPlaceholderText(
+            "可直接手工输入最终方案；确认采用后才供后续阶段使用。"
+        )
+        self.final.textChanged.connect(self.final_changed)
+        self.final.filesDropped.connect(self.drop_final_files)
+        f.addWidget(self.final, 1)
+        row = QHBoxLayout()
+        row.addWidget(button("采用最近输出", self.use_last))
+        row.addWidget(button("保存草稿", self.save_draft))
+        self.confirm_btn = button("确认采用", self.confirm_final, True)
+        row.addWidget(self.confirm_btn)
+        f.addLayout(row)
+        self.structured_btn = button(
+            "校验并预览入库候选", self.preview_structured, True
+        )
+        f.addWidget(self.structured_btn)
+        self.tabs.addTab(final_page, "方案与入库")
+        context = QWidget()
+        co = QVBoxLayout(context)
+        self.include_text = QCheckBox("附带当前原文 / 情节范围")
+        self.include_text.setChecked(True)
+        self.include_assets = QCheckBox("附带本情节关联资产")
+        self.include_assets.setChecked(True)
+        self.include_refs = QCheckBox("附带关联参考图（需视觉模型）")
+        co.addWidget(self.include_text)
+        co.addWidget(self.include_assets)
+        co.addWidget(self.include_refs)
+        co.addWidget(button("预览实际输入", self.preview_input))
+        co.addWidget(button("导出 TXT / MD", self.export_text))
+        co.addStretch()
+        self.tabs.addTab(context, "输入与导出")
+        self.model_badge = label("语言模型配置在设置中维护", "muted")
+        l.addWidget(self.model_badge)
+        self.stop = button("停止等待（远端仍可能计费）", self.cancel_task)
+        l.addWidget(self.stop)
+
+    def build_results(self):
+        page = QWidget()
+        l = QVBoxLayout(page)
+        l.setContentsMargins(0, 0, 0, 54)
+        row = QHBoxLayout()
+        row.addWidget(label("成果集", "hero"), 1)
+        row.addWidget(button("打开成果目录", self.open_results_folder))
+        row.addWidget(button("备份整个项目", self.backup))
+        l.addLayout(row)
+        l.addWidget(label("选定插图按原文情节回链；点击缩略图查看原文件。", "muted"))
+        self.result_cards = QWidget()
+        self.result_grid = QGridLayout(self.result_cards)
+        self.result_grid.setAlignment(Qt.AlignTop)
+        self.result_grid.setSizeConstraint(QLayout.SetMinimumSize)
+        l.addWidget(scroll(self.result_cards), 1)
+        self.pages.addWidget(page)
+
+    def sync_tabs(self):
+        self._navigating = True
+        self.work_tabs.setCurrentIndex(self.tab_pages.index(self.pages.currentIndex()))
+        self._navigating = False
+
+    def toggle_theme(self):
+        dark = (
+            self.settings["theme"] == "dark"
+            or self.settings["theme"] == "system"
+            and QApplication.styleHints().colorScheme() == Qt.ColorScheme.Dark
+        )
+        self.settings["theme"] = "light" if dark else "dark"
+        if self.account:
+            self.store.save_settings(self.account, self.settings)
+        self.apply_theme()
+
+    def apply_sidebar(self):
+        expanded = self.settings["sidebar_visible"]
+        self.side.setFixedWidth(174 if expanded else 48)
+        self.side.show()
+        self.brand.setVisible(expanded)
+        self.projects_combo.setVisible(expanded)
+        self.progress_label.setVisible(expanded)
+        self.account_manage_button.setVisible(expanded)
+        for b, symbol, title in self.system_buttons:
+            b.setText(symbol + "  " + title if expanded else symbol)
+        self.reflow_cards()
+
+    def ensure_account(self):
+        if self.account:
+            return True
+        return self.choose_account()
+
+    def choose_account(self):
+        if not self.guard():
+            return False
+        if (
+            self.settings_page
+            and self.pages.currentIndex() == 7
+            and not self.settings_page.settle()
+        ):
+            return False
+        d = AccountDialog(self)
+        if not d.exec():
+            return False
+        self.activate_account(d.account_id, d.selected_store)
+        return True
+
+    def activate_account(self, account_id, store=None):
+        if self.busy:
+            return False
+        candidate = store or self.store
+        account = next((a for a in candidate.accounts if a["id"] == account_id), None)
+        if not account:
+            raise ValueError("账户不存在")
+        self.save_draft(silent=True)
+        self.assistant.hide()
+        self.reset_settings_panel()
+        if self.project:
+            self.project.close()
+        self.project = None
+        self.sid = None
+        self.scene_id = None
+        self.data = None
+        self.store = candidate
+        self.account = account
+        self.settings = self.store.settings(account)
+        self.image_defaults_cache = self.store.image_defaults(account)
+        self.user_label.setText(account["name"])
+        QSettings().setValue("data_root", str(candidate.root))
+        self.reload_accounts()
+        self.reload_projects()
+        self.apply_theme()
+        self.apply_sidebar()
+        self.navigate(0)
+        self.status.setText("已登录 · " + account["name"])
+        return True
+
+    def logout(self):
+        if not self.guard():
+            return
+        if self.settings_page and not self.settings_page.settle():
+            return
+        self.save_draft(silent=True)
+        self.assistant.hide()
+        self.reset_settings_panel()
+        if self.project:
+            self.project.close()
+        self.project = None
+        self.sid = None
+        self.scene_id = None
+        self.data = None
+        self.account = None
+        self.session_keys.clear()
+        self.settings = copy.deepcopy(DEFAULTS)
+        self.user_label.setText("访客 · 未登录")
+        self.reload_accounts()
+        self.reload_projects()
+        self.apply_theme()
+        self.apply_sidebar()
+        self.navigate(0)
+
+    def project_dialog(self):
+        if not self.guard() or not self.ensure_account():
+            return
+        d = QDialog(self)
+        d.setWindowTitle("项目与制作进度")
+        d.resize(640, 480)
+        l = QVBoxLayout(d)
+        projects = QListWidget()
+        l.addWidget(projects, 1)
+        for index in range(self.projects_combo.count()):
+            path = self.projects_combo.itemData(index)
+            if not path:
+                continue
+            p = Project(path)
+            progress = p.progress()
+            p.close()
+            item = QListWidgetItem(
+                f"{self.projects_combo.itemText(index)}\n情节 {progress['scenes']} · 已确认资产 {progress['confirmed_assets']}/{progress['assets']} · 已选插图 {progress['results']}"
+            )
+            item.setData(Qt.UserRole, index)
+            projects.addItem(item)
+        row = QHBoxLayout()
+        row.addWidget(button("新建项目", lambda: (d.reject(), self.new_project())))
+        row.addWidget(
+            button("导入项目备份", lambda: (d.reject(), self.restore_backup()))
+        )
+        row.addWidget(button("备份当前项目", lambda: (d.reject(), self.backup())))
+        row.addWidget(button("打开所选项目", d.accept, True))
+        l.addLayout(row)
+        if d.exec() and projects.currentItem():
+            self.projects_combo.setCurrentIndex(
+                projects.currentItem().data(Qt.UserRole)
+            )
+
+    def refresh_progress(self):
+        if self.project:
+            p = self.project.progress()
+            self.progress_label.setText(
+                f"原文片段 {p['segments']}\n情节模块 {p['scenes']}\n已确认资产 {p['confirmed_assets']}/{p['assets']}\n已选定插图 {p['results']}"
+            )
+        else:
+            self.progress_label.setText(
+                "未打开项目" if self.account else "访客浏览\n操作前选择本地账户"
+            )
+
+    def update_location(self):
+        if not self.account:
+            self.location_label.setText(
+                "访客工作区 · 从左侧选择或创建本地账户后继续操作"
+            )
+        elif not self.project:
+            self.location_label.setText(
+                self.account["name"] + " · 请从“项目与进度”新建或打开小说"
+            )
+        else:
+            self.location_label.setText(
+                self.project.meta["name"]
+                + " / "
+                + (self.scene_combo.currentText() or "未选择情节")
+            )
+        if hasattr(self, "assistant_context"):
+            self.assistant_context.setText(
+                (self.project.meta["name"] + " / " if self.project else "")
+                + (
+                    self.segments_combo.currentText()
+                    if self.node in (0, 7)
+                    else self.scene_combo.currentText() or "尚未选择情节"
+                )
+            )
+
+    def show_assistant(self):
+        if not self.ensure_account():
+            return
+        if not self.project:
+            self.info("请先新建或打开小说项目。")
+            return
+        if not self.assistant.isVisible():
+            self.assistant.restore_position()
+        self.assistant.show()
+        self.assistant.raise_()
+        self.assistant.activateWindow()
+
+    def persist_assistant_geometry(self):
+        if self.account and hasattr(self, "assistant"):
+            self.settings["assistant_geometry"] = bytes(
+                self.assistant.saveGeometry().toBase64()
+            ).decode()
+            self.store.save_settings(self.account, self.settings)
+
+    def discuss_node(self, node, scene_id=None):
+        if not self.require_project():
+            return
+        if scene_id:
+            self.scene_combo.setCurrentIndex(self.scene_combo.findData(scene_id))
+        self.select_node(node, go_page=False)
+        self.show_assistant()
+
+    def node_parameters(self, node, data=None):
+        if not self.account:
+            return {}
+        p = copy.deepcopy((data or {}).get("params", {}))
+        if not data and self.project and self.sid:
+            scope = self.sid if node in (0, 7) else self.scene_id or self.sid
+            p = copy.deepcopy(self.project.load_node(scope, node).get("params", {}))
+        defaults = self.store.node_defaults(self.account).get(str(node))
+        if defaults is not None:
+            p.update(copy.deepcopy(defaults))
+        else:
+            binding = (
+                self.project.config.get("connections", {}).get(str(node))
+                if self.project
+                else None
+            )
+            if binding is not None:
+                p["connection_id"] = binding
+            else:
+                p.setdefault("connection_id", f"node-{node}")
+            if (
+                p.get("provider") == "openai"
+                and not (data or {}).get("params", {}).get("connection_id")
+                and self.project
+                and binding is None
+            ):
+                cid = "migrated-" + self.project.meta["id"] + "-" + str(node)
+                if not any(
+                    c["id"] == cid for c in self.store.connections(self.account)
+                ):
+                    self.store.save_connection(
+                        self.account,
+                        dict(
+                            id=cid,
+                            name="迁移的语言模型配置 · " + NODES[node],
+                            kind="openai",
+                            endpoint=p["endpoint"],
+                            model=p.get("model", ""),
+                            vision=p.get("vision", False),
+                            legacy=True,
+                        ),
+                    )
+                p["connection_id"] = cid
+        return p
+
+    def refresh_runtime_parameters(self):
+        if self.account and not self.busy:
+            self.save_draft(silent=True)
+            self.show_node()
+            self.refresh_model_summary()
+
+    def ensure_settings_panel(self):
+        if self.settings_page:
+            return
+        placeholder = self.pages.widget(7)
+        self.pages.removeWidget(placeholder)
+        placeholder.deleteLater()
+        self.settings_page = SettingsPanel(self)
+        self.pages.insertWidget(7, self.settings_page)
+
+    def reset_settings_panel(self):
+        if not self.settings_page:
+            return
+        for w in (
+            self.image_connections,
+            self.workflow,
+            self.mapping,
+            self.seed,
+            self.image_size,
+        ):
+            w.setParent(self.runtime_config)
+            w.hide()
+        old = self.settings_page
+        self.pages.removeWidget(old)
+        old.hide()
+        old.deleteLater()
+        self.pages.insertWidget(7, QWidget())
+        self.settings_page = None
+
+    def preview_config_form(self, form):
+        try:
+            p = form.value()
+            d = QDialog(self)
+            d.setWindowTitle(NODES[form.node] + " · 提示词预览")
+            d.resize(800, 600)
+            l = QVBoxLayout(d)
+            edit = QPlainTextEdit(redact(p["system"], self.known_secrets()))
+            edit.setReadOnly(True)
+            l.addWidget(edit)
+            l.addWidget(button("关闭", d.accept))
+            d.exec()
+        except Exception as e:
+            self.error(e)
+
+    def image_parameters(self):
+        if not self.account:
+            return {}
+        data = self.store.image_defaults(self.account)
+        if data:
+            return data
+        latest = (
+            next((j for j in self.project.jobs() if j["kind"] == "ComfyUI 图片"), None)
+            if self.project
+            else None
+        )
+        return dict(
+            connection_id=self.project.config.get("image_connection", "image-default")
+            if self.project
+            else "image-default",
+            workflow=json.dumps(
+                latest.get("workflow", {}), ensure_ascii=False, indent=2
+            )
+            if latest
+            else "",
+            mapping=json.dumps(
+                latest.get("mapping", {"prompt": ["6", "text"]}),
+                ensure_ascii=False,
+                indent=2,
+            )
+            if latest
+            else '{\n  "prompt": ["6", "text"]\n}',
+            seed=latest.get("values", {}).get("seed", 42) if latest else 42,
+            size="1024x1024",
+            generation_rules="",
+        )
+
+    def load_image_runtime(self):
+        data = self.image_parameters()
+        self.image_defaults_cache = copy.deepcopy(data)
+        self._runtime_loading = True
+        self.image_connections.setCurrentIndex(
+            self.image_connections.findData(data.get("connection_id", "image-default"))
+        )
+        self.workflow.setPlainText(data.get("workflow", ""))
+        self.mapping.setPlainText(
+            data.get("mapping", '{\n  "prompt": ["6", "text"]\n}')
+        )
+        self.seed.setValue(data.get("seed", 42))
+        self.image_size.setCurrentText(data.get("size", "1024x1024"))
+        self._runtime_loading = False
+        self.refresh_model_summary()
+
+    def refresh_model_summary(self):
+        profile = (
+            next(
+                (
+                    c
+                    for c in self.store.connections(self.account)
+                    if c["id"] == self.image_connections.currentData()
+                ),
+                None,
+            )
+            if self.account
+            else None
+        )
+        self.image_model_label.setText(
+            "图片模型配置："
+            + (
+                profile["name"] + " · " + KINDS[profile["kind"]]
+                if profile
+                else "尚未配置；请在系统设置中选择"
+            )
+        )
+
+    def pick_image_scene(self, index):
+        sid = self.image_scene_picker.itemData(index)
+        if sid and sid != self.scene_id:
+            self.scene_combo.setCurrentIndex(self.scene_combo.findData(sid))
+
+    def refresh_candidates(self):
+        previous = self.image_list.currentData()
+        self.image_list.blockSignals(True)
+        self.image_list.clear()
+        if self.project and self.scene_id:
+            for j in reversed(self.project.jobs()):
+                if j.get("scene") == self.scene_id:
+                    for p in j.get("results", []):
+                        path = self.project.path / p
+                        if path.exists():
+                            self.image_list.addItem(
+                                f"{path.name} · {j['created']}", str(path)
+                            )
+        index = self.image_list.findData(previous)
+        self.image_list.setCurrentIndex(
+            index if index >= 0 else self.image_list.count() - 1
+        )
+        self.image_list.blockSignals(False)
+        if self.image_list.count():
+            self.show_image(self.image_list.currentIndex())
+        else:
+            self.image.setText(
+                "尚无本场景的候选插图\n\n先讨论方案、确认提示词，再生成。"
+            )
+
+    def edit_generation_prompt(self):
+        if not self.require_project():
+            return
+        d = QDialog(self)
+        d.setWindowTitle("本场景最终提示词（模型配置在设置中）")
+        d.resize(760, 500)
+        l = QVBoxLayout(d)
+        edit = DropEdit(self.comfy_prompt.toPlainText())
+        edit.filesDropped.connect(lambda paths: self.append_text_files(paths, edit))
+        l.addWidget(edit)
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.accepted.connect(d.accept)
+        bb.rejected.connect(d.reject)
+        l.addWidget(bb)
+        if d.exec():
+            self.comfy_prompt.setPlainText(edit.toPlainText())
+            self.save_image_prompt()
+
+    def save_image_prompt(self):
+        if self.project and self.scene_id:
+            self.project.config.setdefault("image_prompt_drafts", {})[self.scene_id] = (
+                self.comfy_prompt.toPlainText()
+            )
+            self.project.save_config()
+
+    def load_image_prompt(self):
+        text = (
+            self.project.config.get("image_prompt_drafts", {}).get(self.scene_id, "")
+            if self.project and self.scene_id
+            else ""
+        )
+        if not text and self.project and self.scene_id:
+            d = self.project.load_node(self.scene_id, 3)
+            if d["status"] == "已确认":
+                text = d["final"]
+        self.comfy_prompt.setPlainText(text)
+
+    def split_scene(self, scene):
+        if not self.guard():
+            return
+        a, b = scene["start_paragraph"], scene["end_paragraph"]
+        if a == b:
+            self.info("当前情节只有一个原文段落；请先调整原文段落或手工修改范围。")
+            return
+        boundary, ok = QInputDialog.getInt(
+            self, "拆分情节", "上半部分结束于段落", a, a, b - 1
+        )
+        if not ok:
+            return
+        req = self.project.requirements(scene["id"])
+        rows = [
+            dict(
+                title=scene["title"] + " · 上",
+                summary=scene.get("summary", ""),
+                start_paragraph=a,
+                end_paragraph=boundary,
+                required_assets=req,
+            ),
+            dict(
+                title=scene["title"] + " · 下",
+                summary="",
+                start_paragraph=boundary + 1,
+                end_paragraph=b,
+                required_assets=req,
+            ),
+        ]
+        self.save_draft(silent=True)
+        new = self.project.replace_scene_partition([scene["id"]], rows)
+        self.data = None
+        self.reload_scenes(new[0]["id"])
+        self.show_node()
+        self.refresh_image_assets()
+        self.refresh_progress()
+
+    def merge_scene(self, scene):
+        if not self.guard():
+            return
+        others = [
+            s
+            for s in self.project.scenes(self.sid)
+            if s["id"] != scene["id"]
+            and (
+                s["end_paragraph"] + 1 == scene["start_paragraph"]
+                or scene["end_paragraph"] + 1 == s["start_paragraph"]
+            )
+        ]
+        if not others:
+            self.info("没有可以合并的相邻情节。")
+            return
+        name, ok = QInputDialog.getItem(
+            self,
+            "合并相邻情节",
+            "选择另一个情节",
+            [s["title"] + " · " + s["id"] for s in others],
+            0,
+            False,
+        )
+        if not ok:
+            return
+        other = next(s for s in others if name.endswith(s["id"]))
+        requirements = []
+        seen = set()
+        for sid in (scene["id"], other["id"]):
+            for r in self.project.requirements(sid):
+                key = (r["kind"], r["name"], r.get("asset_id"))
+                if key not in seen:
+                    seen.add(key)
+                    requirements.append({k: v for k, v in r.items() if k != "slot"})
+        rows = [
+            dict(
+                title=scene["title"] + " / " + other["title"],
+                summary="\n".join(
+                    s.get("summary", "")
+                    for s in sorted([scene, other], key=lambda s: s["start_paragraph"])
+                ),
+                start_paragraph=min(scene["start_paragraph"], other["start_paragraph"]),
+                end_paragraph=max(scene["end_paragraph"], other["end_paragraph"]),
+                required_assets=requirements,
+            )
+        ]
+        self.save_draft(silent=True)
+        new = self.project.replace_scene_partition([scene["id"], other["id"]], rows)
+        self.data = None
+        self.reload_scenes(new[0]["id"])
+        self.show_node()
+        self.refresh_image_assets()
+        self.refresh_progress()
+
+    def refresh_results(self):
+        if not hasattr(self, "result_grid"):
+            return
+        self.clear_grid(self.result_grid)
+        if not self.project:
+            return
+        rows = self.project.final_results()
+        cols = 3 if self.pages.width() > 1000 else 2
+        for i, r in enumerate(rows):
+            card = QFrame()
+            card.setObjectName("panel")
+            l = QVBoxLayout(card)
+            l.setSizeConstraint(QLayout.SetMinimumSize)
+            pix = QPixmap(str(self.project.path / r["file"]))
+            thumb = QLabel()
+            thumb.setAlignment(Qt.AlignCenter)
+            thumb.setFixedHeight(150)
+            thumb.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            if not pix.isNull():
+                thumb.setPixmap(
+                    pix.scaled(250, 145, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                )
+            else:
+                thumb.setText("成果图片缺失")
+            l.addWidget(thumb)
+            l.addWidget(label(r["title"], "section"))
+            l.addWidget(label("选定时间 " + r["selected"], "muted"))
+            l.addWidget(
+                button(
+                    "查看原图",
+                    lambda checked=False, path=self.project.path / r["file"]: reveal(
+                        path
+                    ),
+                )
+            )
+            self.result_grid.addWidget(card, i // cols, i % cols)
+        if not rows:
+            self.result_grid.addWidget(
+                label("尚未选定正式插图。候选图确认后会显示在这里。", "muted"), 0, 0
+            )
+
+    def open_results_folder(self):
+        if self.require_project():
+            reveal(self.project.path / "06_最终成果")
+
+    def reveal_path(self, path):
+        reveal(path)
 
 
 def seed_demo(store):
@@ -2797,15 +3278,12 @@ def main():
     q = QSettings()
     root = args.data_root or (None if args.choose_root else q.value("data_root", ""))
     if not root:
-        QMessageBox.information(
-            None,
-            "选择数据目录",
-            "请选择软件数据根目录。建议选择 D 盘等容量充足的位置；账户、项目和资源将集中保存在这里。",
-        )
-        root = QFileDialog.getExistingDirectory(None, "选择数据根目录")
-        if not root:
-            return
-        q.setValue("data_root", root)
+        if args.choose_root:
+            root = QFileDialog.getExistingDirectory(None, "选择数据根目录")
+            if not root:
+                return
+        else:
+            root = str(Path.cwd() / "user-data")
     if args.demo:
         seed_demo(Store(root))
     w = Window(root)
