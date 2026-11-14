@@ -1,0 +1,19 @@
+{
+  "name": "novel-visualizer-workspace",
+  "private": true,
+  "version": "0.4.0-beta.1",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite --host 127.0.0.1"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "prettier": "^3.10.1",
+    "vite": "^7.3.0"
+  }
+}

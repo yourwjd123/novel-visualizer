@@ -16,3 +16,6 @@ dist/
 *.zip
 *.7z
 *.tar.gz
+
+frontend/node_modules/
+frontend/.vite/

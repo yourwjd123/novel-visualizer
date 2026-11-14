@@ -1,4 +1,4 @@
-from novelviz.ui import main
+from novelviz.desktop import main
 
 if __name__ == "__main__":
     main()

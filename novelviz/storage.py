@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import re
 import shutil
 import sqlite3
@@ -38,12 +39,13 @@ DIRS = [
     "08_项目数据",
 ]
 DEFAULTS = dict(
-    theme="light",
+    theme="system",
     background="",
     background_opacity=18,
     font_size=14,
     sidebar_visible=True,
     assistant_geometry="",
+    workspace_layout={},
     project_rules="",
     confirm_attachments=True,
     provider="demo",
@@ -301,6 +303,8 @@ class Store:
         if image:
             image = copy.deepcopy(image)
             image["connection_id"] = id_map.get(image.get("connection_id"), "")
+            for task in image.get("tasks", {}).values():
+                task["connection_id"] = id_map.get(task.get("connection_id"), "")
             self.save_image_defaults(a, image)
 
     def connections(self, a):
@@ -381,7 +385,39 @@ class Store:
             "temperature",
             "template_id",
         }
+        if not isinstance(params, dict):
+            raise ValueError("节点参数必须为对象")
         data = {k: copy.deepcopy(v) for k, v in params.items() if k in fields}
+        if "max_tokens" in data and (
+            type(data["max_tokens"]) is not int or not 1 <= data["max_tokens"] <= 131072
+        ):
+            raise ValueError("最大输出 token 须为 1—131072 的整数")
+        if "temperature" in data and (
+            type(data["temperature"]) not in (int, float)
+            or not math.isfinite(data["temperature"])
+            or not 0 <= data["temperature"] <= 2
+        ):
+            raise ValueError("温度须在 0—2 之间")
+        if "template" in data:
+            t = data["template"]
+            if (
+                not isinstance(t, dict)
+                or any(
+                    not isinstance(t.get(k), str) or not t[k].strip()
+                    for k in ("id", "name", "body", "version")
+                )
+                or t.get("format") not in ("text", "scenes", "assets")
+                or t.get("format") == "scenes"
+                and node != 0
+                or t.get("format") == "assets"
+                and node != 1
+            ):
+                raise ValueError("节点模板格式无效")
+            data["template"] = {
+                k: v
+                for k, v in t.items()
+                if k in ("id", "name", "body", "version", "format", "node")
+            }
         rows = self.node_defaults(a)
         rows[str(node)] = redact(data, secrets)
         write_json(self.account_dir(a) / "账户设置/node-defaults.json", rows)
@@ -398,12 +434,27 @@ class Store:
             "seed",
             "size",
             "generation_rules",
+            "tasks",
         }
+        cleaned = {
+            k: copy.deepcopy(v) for k, v in data.items() if k in fields and k != "tasks"
+        }
+        if "tasks" in data:
+            if not isinstance(data["tasks"], dict):
+                raise ValueError("图片任务配置必须为对象")
+            cleaned["tasks"] = {
+                name: {
+                    k: copy.deepcopy(v)
+                    for k, v in task.items()
+                    if k in fields and k != "tasks"
+                }
+                for name, task in data["tasks"].items()
+                if name in ("illustration", "人物", "场景", "道具")
+                and isinstance(task, dict)
+            }
         write_json(
             self.account_dir(a) / "账户设置/image-defaults.json",
-            redact(
-                {k: copy.deepcopy(v) for k, v in data.items() if k in fields}, secrets
-            ),
+            redact(cleaned, secrets),
         )
 
     def projects(self, a):

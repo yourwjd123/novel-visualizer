@@ -1,0 +1,95 @@
+name: Windows test build and prerelease
+on:
+  push:
+    tags: ['v*-beta.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Beta release tag, e.g. v0.4.0-beta.1'
+        required: true
+        default: 'v0.4.0-beta.1'
+permissions:
+  contents: write
+jobs:
+  windows-test-build:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    env:
+      QT_QPA_PLATFORM: offscreen
+      QTWEBENGINE_CHROMIUM_FLAGS: '--disable-gpu --disable-dev-shm-usage'
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Validate release identifier
+        shell: pwsh
+        run: |
+          if ($env:TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$') { throw 'Only beta releases are allowed' }
+      - name: Build frontend
+        shell: pwsh
+        run: |
+          npm ci --prefix frontend --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+          npm run build --prefix frontend
+          if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed' }
+      - name: Install and test backend
+        shell: pwsh
+        run: |
+          python -m pip install -r requirements-dev.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Dependencies failed' }
+          python -m compileall -q novelviz main.py
+          python -m ruff check novelviz tests main.py --select F,E9
+          if ($LASTEXITCODE -ne 0) { throw 'Static checks failed' }
+          python -m pytest -q --junitxml=build/backend-tests.xml
+          if ($LASTEXITCODE -ne 0) { throw 'Backend tests failed' }
+      - name: Exercise actual native workspace
+        shell: pwsh
+        run: |
+          python tests/desktop_e2e.py
+          if ($LASTEXITCODE -ne 0) { throw 'Native desktop checks failed' }
+      - name: Build Windows desktop bundle
+        shell: pwsh
+        run: ./scripts/build_windows.ps1 -Version ($env:TAG.Substring(1))
+      - name: Smoke test packaged executable
+        shell: pwsh
+        run: |
+          $env:QTWEBENGINE_CHROMIUM_FLAGS = '--no-sandbox --disable-gpu --disable-dev-shm-usage'
+          $taskData = Join-Path $env:RUNNER_TEMP 'novelviz-packaged-smoke'
+          $shot = Join-Path (Get-Location) 'build/packaged-workspace.png'
+          $proc = Start-Process -FilePath 'dist/NovelVisualizer/NovelVisualizer.exe' -ArgumentList @('--data-root', "`"$taskData`"", '--demo', '--screenshot', "`"$shot`"") -PassThru
+          if (-not $proc.WaitForExit(60000)) { $proc.Kill(); throw 'Packaged app did not finish smoke test' }
+          if ($proc.ExitCode -ne 0) { throw 'Packaged app failed to start' }
+          if (-not (Test-Path $shot) -or (Get-Item $shot).Length -lt 10000) { throw 'Packaged screenshot missing' }
+      - name: Archive corresponding source
+        shell: pwsh
+        run: git archive --format=zip --prefix=novel-visualizer/ --output=dist/novel-visualizer-source.zip HEAD
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-test-evidence
+          path: |
+            build/
+            dist/*test.zip
+            dist/novel-visualizer-source.zip
+      - name: Publish beta assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view $env:TAG --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:TAG --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "$env:TAG · 测试版（非稳定正式版）" --notes-file docs/RELEASE_NOTES_v0.4.md --prerelease
+            if ($LASTEXITCODE -ne 0) { throw 'Release creation failed' }
+          }
+          $bundle = Get-ChildItem dist/*test.zip | Select-Object -First 1
+          gh release upload $env:TAG $bundle.FullName dist/novel-visualizer-source.zip build/backend-tests.xml build/e2e/result.json build/packaged-workspace.png --repo $env:GITHUB_REPOSITORY --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Asset upload failed' }
