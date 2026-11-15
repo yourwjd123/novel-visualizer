@@ -310,7 +310,8 @@ def test_actual_image_provider_receives_snapshot_and_separate_key(work):
             "image-only-key",
         )
         work.store.save_image_defaults(
-            work.account, dict(connection_id="test-image", size="1024x1024")
+            work.account,
+            dict(connection_id="test-image", size="1024x1024", preface="图片首位规则"),
         )
         bridge = Bridge(work.store.root)
         bridge.workspace = work
@@ -319,6 +320,7 @@ def test_actual_image_provider_receives_snapshot_and_separate_key(work):
         wait(bridge)
         assert len(requests) == 1
         assert requests[0][1] == "Bearer image-only-key"
+        assert requests[0][2]["prompt"].startswith("图片首位规则")
         assert (
             "灰蓝布衣" in requests[0][2]["prompt"]
             and "袖口湿透" in requests[0][2]["prompt"]
@@ -476,7 +478,7 @@ def test_language_defaults_and_explicit_override(work):
         work.parameters(1)
 
 
-def test_compact_request_keeps_user_instructions_and_full_local_history(work):
+def test_single_task_keeps_full_local_history_but_sends_only_current_turn(work):
     record = work.project.load_node(work.segment, 0)
     for i in range(8):
         record["messages"].extend(
@@ -488,9 +490,14 @@ def test_compact_request_keeps_user_instructions_and_full_local_history(work):
     work.project.save_node(work.segment, 0, record)
     job, _, _, _ = work.prepare_text(0, "本轮要求")
     assert len(job["messages"]) < 17
-    assert [m["content"] for m in job["messages"] if m["role"] == "user"] == [
-        f"修订要求{i}" for i in range(8)
-    ] + ["本轮要求"]
+    assert job["messages"] == [
+        dict(
+            role="user",
+            content="本轮要求",
+            time=job["messages"][0]["time"],
+            attachments=[],
+        )
+    ]
     assert len(work.project.load_node(work.segment, 0)["messages"]) == 17
     assert job["request_summary"]["estimated_input_tokens"] > 0
 
@@ -548,3 +555,320 @@ def test_default_language_reference_remaps_on_settings_import(work, tmp_path):
     imported = work.store.settings(work.account)["language_connection_id"]
     assert imported.startswith("import-")
     assert imported in {c["id"] for c in work.store.connections(work.account)}
+
+
+def candidate_output():
+    return json.dumps(
+        dict(
+            assets=[
+                dict(
+                    name="甲",
+                    kind="人物",
+                    description="外貌未知",
+                    source="原文明确",
+                    evidence=[dict(paragraph=1, quote="甲走进渡口")],
+                    attributes=[
+                        dict(
+                            name="行动",
+                            value="走进渡口",
+                            source="原文明确",
+                            evidence_refs=[0],
+                        )
+                    ],
+                    priority="核心",
+                    priority_reason="当前章节主要行动者",
+                    first_paragraph=1,
+                )
+            ]
+        ),
+        ensure_ascii=False,
+    )
+
+
+def test_chapter_assets_before_plot_candidates_mapping_and_archive(work):
+    job, _, _, _ = work.prepare_text(1, "构建章节资产", paragraph_range=[1, 2])
+    assert job["scope"] == work.segment
+    assert "甲走进渡口" in job["context"] and "甲转身登船" not in job["context"]
+    work.process_task_output(job, candidate_output())
+    candidate = work.project.config["asset_candidates"][work.segment][0]
+    assert candidate["priority"] == "核心"
+    assert candidate["attributes"][0]["evidence"][0]["quote"] == "甲走进渡口"
+    assert not work.project.assets()
+    work.candidate_action(candidate["id"], "approve")
+    asset = work.project.assets()[0]
+    assert asset["chapter_levels"][work.segment]["priority"] == "核心"
+    scenes = work.confirm_split(rows())
+    assert work.project.requirements(scenes[0]["id"])[0]["asset_id"] == asset["id"]
+    assert not work.project.requirements(scenes[1]["id"])
+    work.archive_asset(asset["id"])
+    assert not work.project.assets()
+    assert work.project.scene_assets(scenes[0]["id"])[0]["problem"] == "缺少档案"
+    work.archive_asset(asset["id"], True)
+    assert work.project.assets()[0]["id"] == asset["id"]
+
+
+def test_consultation_exact_prefix_summary_only_and_explicit_reference(work):
+    settings = work.store.settings(work.account)
+    settings["language_preface"] = "用户首位规则"
+    settings["compact_requests"] = False
+    work.store.save_settings(work.account, settings)
+    work.project.config["rules"] = "旧项目规则绝不能发送"
+    work.project.save_config()
+    work.save_summary("本章梗概哨兵")
+    job, _, paths, _ = work.prepare_text(7, "第一次咨询", mode="consult")
+    work.finish_text(job, "第一次回答")
+    second, _, _, _ = work.prepare_text(7, "第二次咨询", mode="consult")
+    assert second["params"]["system"] == "用户首位规则"
+    assert second["context"] == "【本章内容梗概】\n本章梗概哨兵"
+    assert (
+        len(second["messages"]) == 1
+        and second["messages"][0]["content"] == "第二次咨询"
+    )
+    assert "甲走进渡口" not in second["context"]
+    assert not paths and not second["attachments"]
+    third, _, _, _ = work.prepare_text(
+        7, "追问", mode="consult", reference="明确引用的回答"
+    )
+    assert "明确引用的回答" in third["messages"][0]["content"]
+    assert "第一次回答" not in third["messages"][0]["content"]
+
+
+def test_completion_has_only_declared_context_and_never_applies_automatically(work):
+    work.save_summary("梗概背景")
+    settings = work.store.settings(work.account)
+    settings.update(
+        language_preface="用户前置", completion_guidance="只改描述；输出 changes JSON"
+    )
+    work.store.save_settings(work.account, settings)
+    asset = work.save_asset(
+        dict(name="甲", kind="人物", description="原描述", source="原文明确")
+    )
+    target = dict(
+        asset, type="asset", segment=work.segment, project=work.project.meta["id"]
+    )
+    job, _, _, _ = work.prepare_text(
+        5, "补全伤势", mode="complete", target=target, fields=["description"]
+    )
+    assert job["params"]["system"] == "用户前置"
+    assert (
+        "梗概背景" in job["context"]
+        and "原描述" in job["context"]
+        and "只改描述" in job["context"]
+    )
+    assert "甲走进渡口" not in job["context"]
+    work.process_task_output(
+        job,
+        json.dumps(
+            dict(
+                changes=[
+                    dict(field="description", value="建议的伤势", reason="世界知识推测")
+                ]
+            ),
+            ensure_ascii=False,
+        ),
+    )
+    assert work.project.assets()[0]["description"] == "原描述"
+    assert job["changes"][0]["source"] == "AI建议"
+    with pytest.raises(ValueError, match="未允许"):
+        work.process_task_output(
+            job,
+            json.dumps(
+                dict(changes=[dict(field="name", value="更名")]), ensure_ascii=False
+            ),
+        )
+
+
+def test_single_requests_ignore_history_even_when_old_compact_setting_off(work):
+    settings = work.store.settings(work.account)
+    settings.update(compact_requests=False, language_preface="首位规则")
+    work.store.save_settings(work.account, settings)
+    previous = work.project.load_node(work.segment, 0)
+    previous.update(
+        messages=[
+            dict(role="user", content="旧指令"),
+            dict(role="assistant", content="旧输出"),
+        ],
+        final="旧最终方案",
+    )
+    work.project.save_node(work.segment, 0, previous)
+    job, _, _, _ = work.prepare_text(0, "本轮解析")
+    assert len(job["messages"]) == 1
+    assert "旧指令" not in json.dumps(job["messages"], ensure_ascii=False)
+    assert "旧最终方案" not in job["context"]
+    assert job["params"]["system"].startswith("首位规则")
+    assert len(work.project.load_node(work.segment, 0)["messages"]) == 3
+
+
+def test_candidate_approval_existing_asset_does_not_overwrite_confirmed_content(work):
+    asset = work.save_asset(
+        dict(name="甲", kind="人物", description="用户确认的外貌", review="已锁定")
+    )
+    job, _, _, _ = work.prepare_text(1, "构建")
+    work.process_task_output(job, candidate_output())
+    candidate = work.project.config["asset_candidates"][work.segment][0]
+    work.candidate_action(candidate["id"], "approve")
+    assert len(work.project.assets()) == 1
+    saved = work.project.assets()[0]
+    assert (
+        saved["id"] == asset["id"]
+        and saved["description"] == "用户确认的外貌"
+        and saved["review"] == "已锁定"
+    )
+    assert saved["appearances"][0]["segment"] == work.segment
+
+
+def test_invalid_truncated_and_ambiguous_outputs_do_not_create_cards(work):
+    from novelviz.prompts import parse_object
+
+    job, _, _, _ = work.prepare_text(1, "构建")
+    job["finish_reason"] = "length"
+    with pytest.raises(ValueError, match="长度限制"):
+        work.process_task_output(job, candidate_output())
+    assert not work.project.config.get("asset_candidates")
+    assert (
+        parse_object("这是说明\n" + candidate_output(), expected="assets")["assets"][0][
+            "name"
+        ]
+        == "甲"
+    )
+    with pytest.raises(ValueError, match="多份"):
+        parse_object(candidate_output() + "\n" + candidate_output(), expected="assets")
+    with pytest.raises(ValueError, match="JSON"):
+        parse_object(candidate_output()[:-8], expected="assets")
+
+
+def test_summary_is_stale_after_external_change_and_manual_summary_is_preserved(work):
+    work.save_summary("人工梗概")
+    work.save_summary("模型新梗概", manual=False)
+    assert work.chapter_summary()["text"] == "人工梗概"
+    assert work.chapter_summary()["suggested_text"] == "模型新梗概"
+    segment = work.project.segments()[0]
+    (work.project.path / segment["file"]).write_text("完全不同的原文", encoding="utf-8")
+    with pytest.raises(ValueError, match="梗概"):
+        work.prepare_text(7, "问题", mode="consult")
+
+
+def test_prefix_inheritance_and_empty_override(work):
+    settings = work.store.settings(work.account)
+    settings["language_preface"] = "默认规则"
+    work.store.save_settings(work.account, settings)
+    assert work.parameters(0)["system"].startswith("默认规则")
+    work.store.save_node_default(
+        work.account, 0, dict(preface_override=True, preface="")
+    )
+    assert not work.parameters(0)["system"].startswith("默认规则")
+    work.store.save_node_default(
+        work.account, 0, dict(preface_override=True, preface="节点规则")
+    )
+    assert work.parameters(0)["system"].startswith("节点规则")
+
+
+def test_bridge_single_task_generates_visible_candidates_without_plot(work):
+    bridge = Bridge(work.store.root)
+    bridge.workspace = work
+    bridge.dispatch(
+        "send", dict(node=1, message="构建章节资产", paragraph_range=[1, 2])
+    )
+    wait(bridge)
+    state = work.snapshot()
+    assert not state["scenes"] and len(state["asset_candidates"]) == 1
+    assert not state["assets"]
+    assert state["jobs"][0]["status"] == "success"
+
+
+def test_consultation_wire_contains_only_prefix_summary_and_current_question(
+    work, monkeypatch
+):
+    from novelviz.providers import text_call
+
+    settings = work.store.settings(work.account)
+    settings["language_preface"] = "用户首位规则"
+    work.store.save_settings(work.account, settings)
+    work.save_summary("章节摘要")
+    job, _, _, _ = work.prepare_text(7, "当前问题", mode="consult")
+    params = dict(
+        job["params"],
+        provider="openai",
+        endpoint="http://127.0.0.1:9999/v1",
+        model="mock",
+        structured_output=True,
+    )
+    requests = []
+
+    def request(url, payload, *args, **kwargs):
+        requests.append(payload)
+        return dict(choices=[dict(message=dict(content="回答"), finish_reason="stop")])
+
+    monkeypatch.setattr("novelviz.providers.request_json", request)
+    text_call(params, job["messages"], job["context"])
+    assert requests[0]["messages"] == [
+        dict(role="system", content="用户首位规则"),
+        dict(role="user", content="【本章内容梗概】\n章节摘要"),
+        dict(role="user", content="当前问题"),
+    ]
+    assert "response_format" not in requests[0]
+
+
+def test_variants_inherit_forward_only_and_respect_choices(work):
+    first = work.segment
+    asset = work.save_asset(
+        dict(name="角色", kind="人物", description="基础身份", review="已确认")
+    )
+    hurt = work.save_variant(asset["id"], "受伤", {"description": "伤口和绷带"})
+    second = work.import_text("第二章", "角色伤愈。")
+    assert (
+        work.project.effective_asset(work.project.assets()[0], second)["description"]
+        == "伤口和绷带"
+    )
+    healed = work.save_variant(asset["id"], "伤愈", {"description": "伤口愈合，无绷带"})
+    third = work.import_text("第三章", "角色出发。")
+    assert (
+        work.project.effective_asset(work.project.assets()[0], third)["description"]
+        == "伤口愈合，无绷带"
+    )
+    assert (
+        work.project.effective_asset(work.project.assets()[0], first)["description"]
+        == "伤口和绷带"
+    )
+    work.select_variant(asset["id"], "base")
+    assert (
+        work.project.effective_asset(work.project.assets()[0], third)["description"]
+        == "基础身份"
+    )
+    work.select_variant(asset["id"], hurt["id"])
+    assert work.project.effective_asset(work.project.assets()[0], third)["image"] == ""
+    assert healed["id"] != hurt["id"]
+
+
+def test_paste_merge_and_chapter_archive_preserve_original(work):
+    original = work.segment
+    old = work.project.segment_text(original)
+    work.paste_chapter("追加", "追加正文", target=original)
+    assert (
+        len(work.project.segments()) == 1
+        and work.project.segment_text(original) == old + "\n\n追加正文"
+    )
+    work.paste_chapter("前置", "开头正文", target=original, prepend=True)
+    assert work.project.segment_text(original).startswith("开头正文\n\n")
+    work.chapter_action(original)
+    assert (
+        not work.project.segments()
+        and len(work.project.segments(include_archived=True)) == 1
+    )
+    work.chapter_action(original, True)
+    assert work.project.segment_text(original).startswith("开头正文")
+
+
+def test_attachment_upload_always_one_chapter(work):
+    bridge = Bridge(work.store.root)
+    bridge.workspace.close()
+    bridge.workspace = work
+    payload = ("一段正文。\n\n" * 300).encode()
+    bridge.dispatch(
+        "upload",
+        dict(
+            name="整本附件.txt", target="text", data=base64.b64encode(payload).decode()
+        ),
+    )
+    assert len(work.project.segments()) == 2
+    assert len(work.project.paragraphs(work.segment)) == 300

@@ -3,7 +3,7 @@
 import copy
 import json
 
-VERSION = "2.1"
+VERSION = "3.0"
 COMMON = """你正在协助用户把小说原文转化为场景插图。以本次提供的原文、已确认设定及用户要求为依据。
 一、逐项区分【原文明确】【合理推测】【视觉建议】【用户改编】；不要把猜测说成事实。事实必须引用原文段落编号及短证据，未提供证据时明确标为未知。
 二、锁定/已确认资产不能被后续推测覆盖。发现矛盾时并列列出原设定、新证据及影响，等待用户选择。
@@ -12,7 +12,7 @@ COMMON = """你正在协助用户把小说原文转化为场景插图。以本�
 五、缺失信息分为阻塞项与可选建议；用户可接受缺失后继续。不要替用户做最终确认。
 六、不声称完成尚未执行的文件保存、API 调用或图片生成；不自行执行重试、切换供应商或付费操作。
 七、只处理指定范围，保留人工修改。禁止重复复述全部资料。需要结构化输出时只输出约定 JSON，不添加代码围栏或解释。
-八、对用户的多轮修订给出可确认的新候选，说明变更；历史确认版本不被抹除。"""
+八、对用户本次明确的修订给出可确认的新候选，说明变更；历史确认版本不被抹除。"""
 
 TASKS = {
     "split": (
@@ -22,7 +22,7 @@ TASKS = {
         """目标：将原文划为连续、可编辑的情节模块，供单张场景插图使用。
 粗：主要事件；中：同一时空连续行动；细：适合单张插图的瞬间。用户给出的深度优先。
 以地点、时间、视角、主要行动和事件转折划界，不机械按字数截断，不割裂紧密动作与对话。对提供的段落顺序完整覆盖，每段恰好归属一次，不能遗漏、重叠或编造段落编号。
-每个模块给客观短标题（4—16字）、简短摘要（建议不超过80字）、起止段落、必要资产名称和单个视觉瞬间（建议不超过60字）。只在存在歧义时填写 rationale 和 questions，否则可省略。不要逐段复述原文。字段遵循下方唯一输出约定。仅输出候选，不视为已确认。""",
+同时输出 summary：本章忠实、简洁的内容梗概（建议200—800字），不加入原文未提供的世界知识。每个模块给客观短标题（4—16字）、简短摘要（建议不超过80字）、起止段落、必要资产名称和单个视觉瞬间（建议不超过60字）。只在存在歧义时填写 rationale 和 questions，否则可省略。不要逐段复述原文。字段遵循下方唯一输出约定。仅输出候选，不视为已确认。""",
     ),
     "resplit": (
         "调整已有拆分",
@@ -35,10 +35,10 @@ TASKS = {
         "综合资产提取",
         1,
         "assets",
-        """目标：为当前情节建立人物、场景、道具候选卡片。先对照已有资产ID及名称，匹配同一对象；别名/称谓相似只能建议，不能自动合并。
+        """目标：直接依据当前章节提供的段落范围建立人物、场景、道具候选卡片，不依赖情节拆分结果。对照已有资产的适用状态，明显变化时在 description/states 和建议中指出，建议用户建立状态副卡，不自动覆盖或新建副卡。只处理当前批次，不补写范围之外的内容。先对照已有资产ID及名称，匹配同一对象；别名/称谓相似只能建议，不能自动合并。
 人物提取身份、别名、面容、发型、体态、服装、装备、伤势与变化；场景提取地点、空间结构、建筑、天气、时段、光线；道具提取材质、颜色、形状、尺寸、持有人与状态。原文未描述则未知，不用常识补全。
 每条属性用 attributes 数组记录 name（属性名）、value（属性值）、source（来源）、evidence（段落与摘录）；状态另列生效范围。情绪比喻不直接当客观天气。稳定身份与时序状态分开。与锁定档案冲突时标记 conflict，不覆盖。
-字段遵循下方输出约定。稳定档案、状态与属性不要重复描述同一信息；证据只引用足以支撑判断的短摘录。已有资产优先指出新增属性、状态变化和冲突，不重建全部档案。
+描述建议40—120字，等级理由不超过30字；不写分析长文。属性证据优先用 evidence_refs 引用本资产 evidence 的索引，避免重复摘录；也兼容直接 evidence。用 appearances 数组列出本批各次出现的位置与短证据（paragraph、quote），便于映射到不同情节；同段不要重复。每个资产补充 priority（核心/重要/建议/可选择）、priority_reason（简短理由）、first_paragraph（本批首次出现段落）；等级仅针对当前章节，出现早不等于重要。不为未描述特征罗列大量未知项。一次只输出实际出现的资产；缺少信息列少量关键缺项。字段遵循下方输出约定。稳定档案、状态与属性不要重复描述同一信息；证据只引用足以支撑判断的短摘录。已有资产优先指出新增属性、状态变化和冲突，不重建全部档案。
 kind仅人物/场景/道具，source仅原文明确/AI 建议/用户自定；待审核由程序设置。已有ID仅作为人工合并建议。""",
     ),
     "characters": (
@@ -154,30 +154,57 @@ def default_template(node):
 
 
 OUTPUT_SCHEMAS = {
-    "scenes": '结构约定：只输出 {"scenes":[{"title":"短标题","summary":"摘要","start_paragraph":1,"end_paragraph":2,"required_assets":[{"name":"名称","kind":"人物"}],"visual_moment":"瞬间","rationale":"依据","questions":[]}]}。编号为程序提供的原文段落号，所有段落完整有序且仅出现一次。',
+    "scenes": '结构约定：只输出 {"summary":"本章忠实梗概","scenes":[{"title":"短标题","summary":"摘要","start_paragraph":1,"end_paragraph":2,"required_assets":[{"name":"名称","kind":"人物"}],"visual_moment":"瞬间","rationale":"依据","questions":[]}]}。编号为程序提供的原文段落号，所有段落完整有序且仅出现一次。',
     "assets": '结构约定：只输出 {"assets":[{"name":"名称","kind":"人物","description":"档案","source":"原文明确","existing_id":null,"evidence":[{"paragraph":1,"quote":"原文中逐字摘录"}],"states":[{"range":"生效范围","detail":"状态"}],"suggestions":[],"conflicts":[],"missing":[]}]}。kind仅人物/场景/道具；source仅原文明确/AI 建议/用户自定。原文明确必须有有效证据；其他信息置于建议，不允许指定文件路径或自动覆盖已有ID。',
     "text": "输出结构清楚、简洁的可编辑文本；不伪造工具执行结果。",
 }
 
+OUTPUT_SCHEMAS["assets"] += (
+    "\n每项资产可含 priority（核心/重要/建议/可选择）、priority_reason、first_paragraph。属性证据可用 evidence_refs:[0] 引用本资产 evidence 数组索引，程序校验后展开；不要重复抄写相同证据。"
+)
 OUTPUT_SCHEMAS["assets"] += (
     "\n同时可输出 attributes 数组：每项包含 name、value、source、evidence；证据为 paragraph 与 quote。每项属性来源分别标记，未知值明确写未知，不以整张卡片的来源代替逐属性判断。"
 )
 
 
 def assemble(template, supplement="", project_rules=""):
-    return f"{COMMON}\n\n【任务模板：{template['name']} · {template.get('version', VERSION)}】\n{template['body']}\n\n【输出约定】\n{OUTPUT_SCHEMAS[template['format']]}\n\n【用户补充规则】\n{supplement or '无'}\n\n【项目规则】\n{project_rules or '无'}"
+    return f"{COMMON}\n\n【任务模板：{template['name']} · {template.get('version', VERSION)}】\n{template['body']}\n\n【输出约定】\n{OUTPUT_SCHEMAS[template['format']]}\n\n【用户补充规则】\n{supplement or '无'}"
 
 
-def parse_object(text):
+def parse_object(text, expected=None):
     text = text.strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
     try:
         data = json.loads(text)
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError) as error:
+        # Extract only a unique, complete expected top-level object. Never repair syntax.
+        found = []
+        if expected:
+            decoder = json.JSONDecoder()
+            cursor = 0
+            while cursor < len(text):
+                start = text.find("{", cursor)
+                if start < 0:
+                    break
+                try:
+                    value, end = decoder.raw_decode(text, start)
+                    if isinstance(value, dict) and expected in value:
+                        found.append(value)
+                    cursor = end
+                except json.JSONDecodeError:
+                    cursor = start + 1
+            if len(found) == 1:
+                return found[0]
+            if len(found) > 1:
+                raise ValueError(
+                    "找到多份结构化结果，无法确定应采用哪份；请保留一份后校验"
+                ) from None
+        detail = f"第 {getattr(error, 'lineno', '?')} 行，第 {getattr(error, 'colno', '?')} 列"
         raise ValueError(
-            "模型输出不是有效 JSON。可以手工修改后再次校验；不会自动调用模型修复。"
+            f"JSON 格式错误（{detail}）：可能有截断、说明文字或语法错误。原始输出已保留，可编辑后校验；不会自动调用模型修复或重试。"
         ) from None
+
     if not isinstance(data, dict):
         raise ValueError("结构化结果必须是 JSON 对象")
     return data
@@ -296,12 +323,32 @@ _LEGACY_BODIES = {
 }
 
 
+_V21_BODIES = {
+    "split": "f182aeafc46694937786fd61a0d1a53db9e57698d4e2b68369f3447b5dbcc5cb",
+    "resplit": "8c36bbbe366df5d146d2adba90acfda0a0325839acee4167e5feaee86f89cd89",
+    "assets": "6b0fffd4b7e8802cc1a5dc4551fb6f28c8270f61784bc051a69e924898762754",
+    "characters": "acb8430c550a63b7aadc97f05e12861d97bbeca0618072e5de67d3bdd16f9428",
+    "places": "88a79b1d3f22c14d83121415370b6d60da2d1b3549fcca2de621d41d67d35a1b",
+    "props": "3f81c39f4549e15d1a726efe7a7b65231d5f281ca7f3ce2bcffe2af06593dd31",
+    "scene": "ea2c3efc14151918c525146da5b1c1d0cce0cae74cf7bc66ff03c17634c23449",
+    "prompt": "842654b1210362df8ae8f55befbd798e66869ffcf819225ed2f84e502f30d778",
+    "image": "1c999ddad181002b75a822e95585ace0e4a86f38bd9642a09d85e96e39a878a6",
+    "reference": "139740eea3f72c81953e024543cc21c5ce3524ca4a3dc2e005f8d3ccdc77de8e",
+    "review": "769ebaf379233a5d7d89fbdbf687db35b99020ec57fc5740c9363ad3cbb6e705",
+    "edit": "a1e233776118cb9fb772449e3bfccf4be63958f533afa2231ed8da2081dd8c7c",
+    "planner": "688b8b81619a734e103317cecb3b69edb3a9139965811cbf149eebc5d5a8d193",
+}
+
+
 def upgrade_template(template):
     import hashlib
 
-    if template.get("version") == "2.0" and hashlib.sha256(
+    if template.get("version") in ("2.0", "2.1") and hashlib.sha256(
         template.get("body", "").encode()
-    ).hexdigest() == _LEGACY_BODIES.get(template.get("id")):
+    ).hexdigest() in (
+        _LEGACY_BODIES.get(template.get("id")),
+        _V21_BODIES.get(template.get("id")),
+    ):
         current = next((t for t in builtins() if t["id"] == template["id"]), None)
         if current:
             return current

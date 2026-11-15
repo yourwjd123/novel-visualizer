@@ -19,6 +19,7 @@ FIELDS = {
     "max_tokens",
     "temperature",
     "legacy",
+    "structured_output",
 }
 
 
@@ -40,6 +41,7 @@ def clean_profile(data):
     out["vision"] = bool(out.get("vision", False))
     out["max_tokens"] = max(1, min(131072, int(out.get("max_tokens", 4096))))
     out["temperature"] = max(0.0, min(2.0, float(out.get("temperature", 0.7))))
+    out["structured_output"] = bool(out.get("structured_output", False))
     out["legacy"] = bool(out.get("legacy", False))
     return out
 

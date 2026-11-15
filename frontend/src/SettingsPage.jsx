@@ -14,8 +14,7 @@ export default function SettingsPage() {
     [editor, setEditor] = useState(null),
     [task, setTask] = useState("illustration"),
     [image, setImage] = useState(null),
-    [appearance, setAppearance] = useState(copy(s.settings)),
-    [rules, setRules] = useState(s.rules || "");
+    [appearance, setAppearance] = useState(copy(s.settings));
   const textMode =
     section === "language" ||
     (section === "custom" && customKind === "language");
@@ -124,7 +123,7 @@ export default function SettingsPage() {
           ["language", "语言模型配置"],
           ["image", "生图模型配置"],
           ["custom", "自定义节点接口"],
-          ["appearance", "外观与项目规则"],
+          ["appearance", "外观"],
           ["transfer", "导入与导出"],
         ].map(([id, label]) => (
           <button
@@ -226,17 +225,37 @@ export default function SettingsPage() {
               />
             </label>
           </div>
-          <label className="check-row">
-            <input
-              type="checkbox"
-              checked={shared.compact_requests !== false}
+          <label>
+            用户前置提示词（首位发送，所有文本任务默认继承）
+            <textarea
+              aria-label="默认语言前置提示词"
+              rows={5}
+              value={shared.language_preface || ""}
               onChange={(e) => {
-                setShared({ ...shared, compact_requests: e.target.checked });
+                setShared({ ...shared, language_preface: e.target.value });
                 dirty.current = true;
               }}
             />
-            精简请求：减少重复模型草稿，仅发送本轮附件；完整记录保存在本地
           </label>
+          <label>
+            AI补全固定指导（可编辑）
+            <textarea
+              aria-label="AI补全指导"
+              rows={6}
+              value={
+                shared.completion_guidance ||
+                s.completion_guidance_default ||
+                ""
+              }
+              onChange={(e) => {
+                setShared({ ...shared, completion_guidance: e.target.value });
+                dirty.current = true;
+              }}
+            />
+          </label>
+          <p className="muted small">
+            自动任务、咨询和补全均为单轮请求，不发送历史对话。咨询只附带本章梗概及本轮问题；补全另带当前编辑对象全文和固定指导。
+          </p>
           <button
             className="primary"
             onClick={async () => {
@@ -247,7 +266,11 @@ export default function SettingsPage() {
                   language_connection_id: shared.language_connection_id,
                   language_max_tokens: shared.language_max_tokens,
                   language_temperature: shared.language_temperature,
-                  compact_requests: shared.compact_requests,
+                  language_preface: shared.language_preface || "",
+                  completion_guidance:
+                    shared.completion_guidance ||
+                    s.completion_guidance_default ||
+                    "",
                 })
               ) {
                 for (let n = 0; n < s.nodes.length; n++) {
@@ -319,8 +342,7 @@ export default function SettingsPage() {
             >
               {[0, 1, 5, 2, 3, 4, 6, 7].map((n) => (
                 <option key={n} value={n}>
-                  {s.nodes[n]}
-                  {n === 7 ? "（可选）" : ""}
+                  {n === 7 ? "实时咨询" : s.nodes[n]}
                 </option>
               ))}
             </select>
@@ -414,6 +436,27 @@ export default function SettingsPage() {
               />
             </label>
           </div>
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={!!params.preface_override}
+              onChange={(e) => setParam("preface_override", e.target.checked)}
+            />
+            使用此节点独立前置提示词（关闭时继承默认；启用后可明确留空）
+          </label>
+          <label>
+            节点前置提示词
+            <textarea
+              rows={4}
+              value={params.preface || ""}
+              onChange={(e) => setParam("preface", e.target.value)}
+            />
+          </label>
+          {node === 7 && (
+            <p className="notice">
+              实时咨询仅使用此节点前置提示词、本章梗概与本轮问题；下方自动任务模板及补充要求不参与咨询请求。
+            </p>
+          )}
           <label>
             任务模板
             <select
@@ -469,7 +512,7 @@ export default function SettingsPage() {
           </label>
           <p className="muted small">
             任务输出约定：{params.template.format}
-            。通用规则与项目规则也会附带，可在 AI 助手“本次输入”查看。
+            。任务提示词仅用于自动任务；自由咨询不会附带。前置提示词始终位于任务规则之前。
           </p>
           <div className="actions separated">
             <button className="primary" onClick={saveLanguage}>
@@ -660,15 +703,25 @@ export default function SettingsPage() {
               reference_1、reference_2
               等按场景关联卡顺序对应。未映射的参考图不会上传，生成前会提示。
             </p>
+            {section === "custom" && (
+              <label className="check-row">
+                <input
+                  type="checkbox"
+                  checked={!!image.preface_override}
+                  onChange={(e) =>
+                    setImageField("preface_override", e.target.checked)
+                  }
+                />
+                使用此生图节点独立前置提示词
+              </label>
+            )}
             <label>
-              默认生成约束
+              用户前置提示词（作为生图提示词首段或工作流 prompt 输入）
               <textarea
+                aria-label="生图前置提示词"
                 rows={5}
-                value={image.generation_rules || ""}
-                onChange={(e) =>
-                  setImageField("generation_rules", e.target.value)
-                }
-                placeholder="只作用于此图片任务，不与人物三视图、空环境图等模板混用"
+                value={image.preface ?? image.generation_rules ?? ""}
+                onChange={(e) => setImageField("preface", e.target.value)}
               />
             </label>
             <button className="primary" onClick={saveImage}>
@@ -758,27 +811,30 @@ export default function SettingsPage() {
             />
             真实 API 调用含附件时确认大小（包括历史附件）；纯文本默认不提示
           </label>
-          <label>
-            当前项目补充规则
-            <textarea
-              rows={5}
-              value={rules}
-              onChange={(e) => {
-                setRules(e.target.value);
-                dirty.current = true;
-              }}
-            />
-          </label>
+          {s.rules && (
+            <details>
+              <summary>旧项目规则存档（不再发送）</summary>
+              <pre>{s.rules}</pre>
+              <p>可复制到接口前置提示词中，不会自动迁移或重复发送。</p>
+            </details>
+          )}
           <button
             className="primary"
             onClick={async () => {
-              if (await run("settings", { ...appearance, rules })) {
+              if (
+                await run("settings", {
+                  theme: appearance.theme,
+                  background_opacity: appearance.background_opacity,
+                  font_size: appearance.font_size,
+                  confirm_attachments: appearance.confirm_attachments,
+                })
+              ) {
                 dirty.current = false;
-                notify("外观、附件提示和项目规则已保存");
+                notify("外观与附件提示已保存");
               }
             }}
           >
-            保存外观与规则
+            保存外观
           </button>
         </section>
       )}
@@ -797,7 +853,7 @@ export default function SettingsPage() {
           <div className="separated">
             <h2>测试版本与许可</h2>
             <p className="muted small prose">
-              v0.4.1-beta.1 · GPL-3.0。UI 标签交互与纸墨基础参考
+              v0.5.1-beta.1 · GPL-3.0。UI 标签交互与纸墨基础参考
               Pagekin；视觉资产卡参考 Story Asset
               Studio（MIT）。对应版权和完整许可随源码提供。此应用只做已有文本可视化，不提供小说创作功能。
             </p>
@@ -849,6 +905,16 @@ function ConnectionEditor({ profile, imageOnly, onClose, onSaved }) {
             <X size={18} />
           </button>
         </div>
+        {!imageOnly && (
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={!!p.structured_output}
+              onChange={(e) => set("structured_output", e.target.checked)}
+            />
+            此服务明确支持 JSON 对象输出模式（不支持时请勿启用）
+          </label>
+        )}
         <label>
           配置名称
           <input value={p.name} onChange={(e) => set("name", e.target.value)} />

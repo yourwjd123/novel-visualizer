@@ -43,6 +43,8 @@ DEFAULTS = dict(
     language_max_tokens=10000,
     language_temperature=0.5,
     compact_requests=True,
+    language_preface="",
+    completion_guidance="",
     theme="system",
     background="",
     background_opacity=18,
@@ -400,6 +402,9 @@ class Store:
             "template_id",
             "connection_override",
             "parameter_override",
+            "preface",
+            "preface_override",
+            "completion_guidance",
         }
         if not isinstance(params, dict):
             raise ValueError("节点参数必须为对象")
@@ -452,6 +457,8 @@ class Store:
             "generation_rules",
             "tasks",
             "connection_override",
+            "preface",
+            "preface_override",
         }
         cleaned = {
             k: copy.deepcopy(v) for k, v in data.items() if k in fields and k != "tasks"
@@ -728,19 +735,68 @@ class Project:
             )
         ]
 
+    def effective_asset(self, asset, segment, scene=None):
+        data = copy.deepcopy(asset)
+        selected = (
+            self.config.get("scene_variant_selections", {})
+            .get(scene, {})
+            .get(asset["id"], "auto")
+        )
+        if selected == "auto":
+            selected = (
+                self.config.get("chapter_variant_selections", {})
+                .get(segment, {})
+                .get(asset["id"], "auto")
+            )
+        chapters = [r["id"] for r in self.segments()]
+        valid = [
+            v
+            for v in asset.get("variants", [])
+            if v.get("confirmed")
+            and v.get("chapter") in chapters
+            and segment in chapters
+            and chapters.index(v["chapter"]) <= chapters.index(segment)
+        ]
+        variant = None
+        if selected == "auto" and valid:
+            variant = max(
+                enumerate(valid),
+                key=lambda pair: (chapters.index(pair[1]["chapter"]), pair[0]),
+            )[1]
+        elif selected not in ("auto", "base"):
+            variant = next(
+                (
+                    v
+                    for v in asset.get("variants", [])
+                    if v["id"] == selected and v.get("confirmed")
+                ),
+                None,
+            )
+        if variant:
+            data.update(copy.deepcopy(variant["data"]))
+            data["image"] = variant.get("image", "")
+            data["selected_variant"] = dict(
+                id=variant["id"], title=variant["title"], revision=variant["revision"]
+            )
+        else:
+            data["selected_variant"] = dict(id="base", title="主卡")
+        return data
+
     def scene_assets(self, scene_id):
         assets = {a["id"]: a for a in self.assets()}
         out = []
         for r in self.requirements(scene_id):
             r = copy.deepcopy(r)
             a = assets.get(r.get("asset_id"))
+            if a:
+                a = self.effective_asset(a, self.scene(scene_id)["segment"], scene_id)
             r["asset"] = a
             if not a:
                 r["problem"] = "缺少档案"
             elif a["review"] not in ("已确认", "已锁定"):
                 r["problem"] = "设定待确认"
             elif not a.get("image"):
-                r["problem"] = "缺少参考图"
+                r["problem"] = ""
             elif not (self.path / a["image"]).is_file():
                 r["problem"] = "参考图文件丢失"
             else:
@@ -870,10 +926,19 @@ class Project:
         shutil.copy2(source, dest)
         return dest.relative_to(self.path).as_posix()
 
-    def segments(self):
-        return [
+    def segments(self, include_archived=False):
+        rows = [
             dict(r) for r in self.db.execute("SELECT * FROM segments ORDER BY rowid")
         ]
+        return (
+            rows
+            if include_archived
+            else [
+                r
+                for r in rows
+                if r["id"] not in self.config.get("archived_chapters", [])
+            ]
+        )
 
     def add_segment(self, name, text, source=None):
         if not text.strip():
@@ -963,11 +1028,12 @@ class Project:
         shutil.copy2(p, dest)
         return dest.relative_to(self.path).as_posix()
 
-    def assets(self):
-        return [
+    def assets(self, include_archived=False):
+        rows = [
             json.loads(r[0])
             for r in self.db.execute("SELECT data FROM assets ORDER BY rowid")
         ]
+        return rows if include_archived else [r for r in rows if not r.get("archived")]
 
     def save_asset(self, a):
         a = redact(a, self.secrets)

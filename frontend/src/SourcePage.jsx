@@ -5,8 +5,17 @@ import { PageHeading, Empty, DropZone } from "./App";
 import { api } from "./api";
 
 export default function SourcePage() {
-  const { s, run, setModal, openAI, navigate, notify, uploadFiles, dirty } =
-    useWorkspace();
+  const {
+    s,
+    run,
+    setModal,
+    openAI,
+    navigate,
+    notify,
+    uploadFiles,
+    setAssetEdit,
+    dirty,
+  } = useWorkspace();
   const [rows, setRows] = useState([]),
     [selected, setSelected] = useState(0),
     [edit, setEdit] = useState(null),
@@ -15,7 +24,12 @@ export default function SourcePage() {
     [boundary, setBoundary] = useState(1),
     [history, setHistory] = useState([]),
     [showSource, setShowSource] = useState(true),
-    [depth, setDepth] = useState(s.depth || "中 · 连续情节");
+    [depth, setDepth] = useState(s.depth || "中 · 连续情节"),
+    [summaryText, setSummaryText] = useState(s.chapter_summary?.text || "");
+  useEffect(
+    () => setSummaryText(s.chapter_summary?.text || ""),
+    [s.segment, s.chapter_summary?.text],
+  );
   const sourceRef = useRef(null);
   const draft = s.drafts?.[s.segment];
   const signature = JSON.stringify(draft?.rows || s.scenes);
@@ -137,15 +151,7 @@ export default function SourcePage() {
     );
   }
   async function extract() {
-    const row = rows[selected];
-    if (!row || row.review !== "已确认") return notify("请先确认选中的情节");
-    if (!(await run("select", { scene: row.id }))) return;
-    openAI(1);
-    await run("send", {
-      node: 1,
-      message:
-        "解析当前情节涉及的人物、场景与道具。对照已有资产，输出有证据的资产候选；已存在的档案仅提出新增信息与冲突，不自动覆盖。",
-    });
+    navigate("assets");
   }
   const current = rows[selected];
   const covered = new Set(
@@ -174,6 +180,14 @@ export default function SourcePage() {
             </button>
           }
         />
+        {(s.archived_chapters || []).map((ch) => (
+          <button
+            key={ch.id}
+            onClick={() => run("chapter_action", { id: ch.id, restore: true })}
+          >
+            恢复章节：{ch.name}
+          </button>
+        ))}
         <DropZone
           onFiles={(files) => uploadFiles(files, "text")}
           accept=".txt,.md,.docx,.epub"
@@ -212,16 +226,29 @@ export default function SourcePage() {
             >
               {confirmed ? "全部转为候选" : "确认全部情节"}
             </button>
-            <button
-              className="primary"
-              disabled={s.busy || current?.review !== "已确认" || edit !== null}
-              onClick={extract}
-            >
-              解析本情节资产 →
+            <button className="primary" disabled={!s.segment} onClick={extract}>
+              前往本章资产库 →
             </button>
           </>
         }
       />
+      {(s.archived_chapters || []).length > 0 && (
+        <details>
+          <summary>已删除章节</summary>
+          {s.archived_chapters.map((ch) => (
+            <p key={ch.id}>
+              {ch.name}
+              <button
+                onClick={() =>
+                  run("chapter_action", { id: ch.id, restore: true })
+                }
+              >
+                恢复章节
+              </button>
+            </p>
+          ))}
+        </details>
+      )}
       <div className="source-toolbar">
         <label className="inline-label">
           当前片段
@@ -276,6 +303,31 @@ export default function SourcePage() {
           手工拆分
         </button>
       </div>
+      <details className="chapter-summary">
+        <summary>
+          本章内容梗概 · 咨询与补全的背景依据
+          {s.chapter_summary?.stale ? "（原文已变化，请更新）" : ""}
+        </summary>
+        <p className="muted small">
+          解析时生成，也可手工填写；咨询和补全不会改用章节全文。手工梗概不会被重新解析自动覆盖。
+        </p>
+        <textarea
+          aria-label="本章梗概"
+          rows={4}
+          value={summaryText}
+          onChange={(e) => setSummaryText(e.target.value)}
+        />
+        <button onClick={() => run("save_summary", { text: summaryText })}>
+          保存本章梗概
+        </button>
+        {s.chapter_summary?.suggested_text && (
+          <button
+            onClick={() => setSummaryText(s.chapter_summary.suggested_text)}
+          >
+            载入重新解析建议梗概
+          </button>
+        )}
+      </details>
       <div className="status-line">
         <span>
           {s.busy
@@ -354,6 +406,44 @@ export default function SourcePage() {
               <h2>原文对照</h2>
               <small>只读 · 原文件已保留</small>
             </header>
+            <div className="chapter-stack" aria-label="章节卡片">
+              {s.segments.map((ch, i) => (
+                <div
+                  key={ch.id}
+                  className={
+                    "chapter-tab " + (ch.id === s.segment ? "active" : "")
+                  }
+                >
+                  <button
+                    title={ch.name}
+                    onClick={() => {
+                      if (
+                        dirty.current &&
+                        !window.confirm("放弃未保存编辑并切章？")
+                      )
+                        return;
+                      run("select", { segment: ch.id });
+                    }}
+                  >
+                    {i + 1} · {ch.name}
+                  </button>
+                  <button
+                    aria-label={"删除章节 " + ch.name}
+                    disabled={s.busy}
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          "归档此章节卡？原文、资产和历史保留，可恢复。",
+                        )
+                      )
+                        run("chapter_action", { id: ch.id });
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
             <div className="paragraph-list" ref={sourceRef}>
               {s.paragraphs.map((p) => (
                 <div
@@ -389,7 +479,7 @@ export default function SourcePage() {
           <div className="section-heading">
             <h2>情节卡 · {confirmed ? "已确认" : "待确认"}</h2>
             <button className="quiet small" onClick={() => openAI(0)}>
-              讨论拆分
+              查看解析任务
             </button>
           </div>
           {error && (
@@ -556,7 +646,20 @@ export default function SourcePage() {
                       </div>
                       <div className="tags">
                         {(row.required_assets || []).map((a, n) => (
-                          <span key={n}>{a.name}</span>
+                          <button
+                            className="asset-tag"
+                            key={n}
+                            disabled={!a.asset_id}
+                            onClick={() => {
+                              const asset = s.assets.find(
+                                (v) => v.id === a.asset_id,
+                              );
+                              if (asset) setAssetEdit(asset);
+                              else notify("资产档案缺失，可在资产库补建或恢复");
+                            }}
+                          >
+                            {a.name}
+                          </button>
                         ))}
                       </div>
                     </>

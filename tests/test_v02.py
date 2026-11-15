@@ -119,7 +119,7 @@ def test_scene_links_shared_across_segments_and_invalidate(tmp_path):
         ],
     )
     assert [r["problem"] for r in p.scene_assets(first["id"])] == [
-        "缺少参考图",
+        "",
         "缺少档案",
     ]
     second = p.add_segment("章二", "新的原文")

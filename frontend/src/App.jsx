@@ -54,11 +54,19 @@ export default function App() {
   }
   async function run(op, data = {}, reload = true) {
     if (["send", "generate"].includes(op))
-      setAI({
+      setAI((v) => ({
+        ...v,
         open: true,
         node: op === "send" ? data.node : 4,
         asset: data.asset || null,
-      });
+        panel:
+          data.mode === "consult"
+            ? "consult"
+            : data.mode === "complete"
+              ? "complete"
+              : "status",
+        job: null,
+      }));
     try {
       if (
         [
@@ -71,6 +79,7 @@ export default function App() {
       )
         await assistant.current?.flush();
       const r = await api(op, data);
+      if (r?.job) setAI((v) => ({ ...v, job: r.job }));
       if (reload) await refresh();
       return r ?? true;
     } catch (e) {
@@ -85,12 +94,30 @@ export default function App() {
         bridge.changed.connect((raw) => {
           if (!alive) return;
           const event = JSON.parse(raw);
-          refresh().catch((e) => setError(e.message));
-          if (event.error) notify(event.error.message);
-          if (event.type === "finished")
-            notify(
-              event.error ? "任务未完成；输入已保留" : "任务完成，请审核输出",
-            );
+          refresh()
+            .then((next) => {
+              if (event.type !== "finished") return;
+              const job = next.jobs.find((j) => j.id === event.job);
+              if (
+                event.error ||
+                job?.status === "failed" ||
+                job?.status === "unknown"
+              )
+                notify("任务未完成；输入与记录已保留");
+              else if (job?.status === "invalid")
+                notify("输出未通过校验；请在任务状态查看原因和原始输出");
+              else if (job?.mode === "consult") notify("咨询回复已保存");
+              else if (job?.mode === "complete")
+                notify("AI补全建议已生成，请逐项审核采用");
+              else if (job?.node === 1)
+                notify(
+                  `已生成 ${job.result_count ?? 0} 项本章资产候选，请到视觉资产库审核`,
+                );
+              else if (job?.node === 0)
+                notify("情节候选与本章梗概已生成，请核对");
+              else notify("任务完成，请在对应工作区查看结果");
+            })
+            .catch((e) => setError(e.message));
         });
         return refresh();
       })
@@ -140,7 +167,41 @@ export default function App() {
     setAssetEdit(null);
   }
   function openAI(node = 0, asset = null, reference = null) {
-    withProject(() => setAI({ open: true, node, asset, reference }));
+    withProject(() =>
+      setAI({
+        open: true,
+        node,
+        asset,
+        reference,
+        panel: "status",
+        job: current.current?.jobs?.find(
+          (j) =>
+            j.node === node &&
+            j.segment === current.current.segment &&
+            (!asset || j.asset === asset),
+        )?.id,
+      }),
+    );
+  }
+  function openCompletion(target, fields, onApply) {
+    withProject(() =>
+      setAI({
+        open: true,
+        node: target.type === "prompt" ? 3 : 5,
+        panel: "complete",
+        target: {
+          ...target,
+          segment: s.segment,
+          project: s.project.id,
+          request_id: Date.now() + "-" + Math.random(),
+        },
+        fields,
+        onApply,
+      }),
+    );
+  }
+  function openConsult() {
+    withProject(() => setAI({ open: true, node: 7, panel: "consult" }));
   }
   function openSystem(id, name) {
     if (!current.current?.account) {
@@ -208,6 +269,8 @@ export default function App() {
     navigate,
     withProject,
     openAI,
+    openCompletion,
+    openConsult,
     modal,
     setModal,
     assetEdit,
@@ -375,7 +438,7 @@ export default function App() {
             </button>
             <div className="sidebar-spacer" />
             <p className="side-label sidebar-note">
-              v0.4.1-beta.1 · 测试版
+              v0.5.1-beta.1 · 测试版
               <br />
               既有文本 → 视觉资产 → 插图
             </p>
@@ -427,9 +490,7 @@ export default function App() {
         <button
           className="ai-launch primary"
           onClick={() =>
-            ai.open
-              ? setAI((v) => ({ ...v, open: false }))
-              : openAI(page === "source" ? 0 : page === "assets" ? 1 : 2)
+            ai.open ? setAI((v) => ({ ...v, open: false })) : openConsult()
           }
         >
           ✧ AI 助手{s.busy && <span className="busy-dot" />}
@@ -690,9 +751,10 @@ function Projects({ onOpen, onCreate }) {
   );
 }
 function ImportText({ onDone }) {
-  const { run, uploadFiles } = React.useContext(WorkspaceContext);
+  const { s, run, uploadFiles } = React.useContext(WorkspaceContext);
   const [name, setName] = useState(""),
-    [text, setText] = useState("");
+    [text, setText] = useState(""),
+    [placement, setPlacement] = useState(null);
   return (
     <>
       <p className="muted small">
@@ -712,11 +774,53 @@ function ImportText({ onDone }) {
       >
         从文件导入
       </button>
+      {placement !== null && (
+        <section
+          role="dialog"
+          aria-label="粘贴文本归属"
+          className="paste-placement"
+        >
+          <h3>这段文本属于哪一章？</h3>
+          <select
+            aria-label="粘贴归属"
+            value={placement}
+            onChange={(e) => setPlacement(e.target.value)}
+          >
+            <option value="new">独立章节</option>
+            {s.segments.map((ch) => (
+              <React.Fragment key={ch.id}>
+                <option value={"append:" + ch.id}>
+                  归入上一章末尾：{ch.name}
+                </option>
+                <option value={"prepend:" + ch.id}>
+                  归入下一章开头：{ch.name}
+                </option>
+              </React.Fragment>
+            ))}
+          </select>
+          <button
+            onClick={async () => {
+              const parts = placement.split(":");
+              if (
+                await run("import_text", {
+                  name: name || "粘贴章节",
+                  text,
+                  target: parts[1],
+                  prepend: parts[0] === "prepend",
+                })
+              )
+                onDone();
+            }}
+          >
+            确认章节归属
+          </button>
+          <button onClick={() => setPlacement(null)}>取消</button>
+        </section>
+      )}
       <form
         onSubmit={async (e) => {
           e.preventDefault();
-          if (await run("import_text", { name: name || "粘贴片段", text }))
-            onDone();
+          setPlacement("new");
         }}
       >
         <label>

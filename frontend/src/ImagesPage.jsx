@@ -16,11 +16,23 @@ import ImageCard from "./components/ImageCard";
 import { api } from "./api";
 
 export default function ImagesPage() {
-  const { s, run, notify, setAssetEdit, setModal, setLarge, openAI, navigate } =
-    useWorkspace();
+  const {
+    s,
+    run,
+    notify,
+    setAssetEdit,
+    setModal,
+    setLarge,
+    openAI,
+    openCompletion,
+    navigate,
+  } = useWorkspace();
   const [prompt, setPrompt] = useState(s.prompt || ""),
     [selected, setSelected] = useState(""),
-    [editing, setEditing] = useState(false);
+    [editing, setEditing] = useState(false),
+    [annotations, setAnnotations] = useState([]);
+  const currentPrompt = useRef(prompt);
+  currentPrompt.current = prompt;
   useEffect(() => {
     setPrompt(s.prompt || "");
     setSelected("");
@@ -37,7 +49,7 @@ export default function ImagesPage() {
     (r) => r.scene === s.scene && r.job === picture?.job.id,
   );
   async function savePrompt() {
-    const ok = await run("save_prompt", { text: prompt });
+    const ok = await run("save_prompt", { text: prompt, annotations });
     if (ok) {
       setEditing(false);
       notify("本情节提示词已保存");
@@ -75,7 +87,17 @@ export default function ImagesPage() {
         }
         actions={
           <>
-            <button onClick={() => openAI(2)}>讨论方案</button>
+            <button
+              disabled={s.busy}
+              onClick={() =>
+                run("send", {
+                  node: 2,
+                  message: "根据当前情节与资产生成一个场景插图方案。",
+                })
+              }
+            >
+              生成插图方案
+            </button>
             <button
               className="primary"
               disabled={s.busy}
@@ -116,10 +138,62 @@ export default function ImagesPage() {
         <button onClick={() => setEditing(!editing)}>
           {editing ? "收起提示词" : "查看 / 编辑提示词"}
         </button>
-        <button className="quiet" onClick={() => openAI(3)}>
-          提示词定稿
+        <button
+          className="quiet"
+          disabled={s.busy}
+          onClick={() =>
+            run("send", {
+              node: 3,
+              message: "依据当前情节、资产和已确认方案生成可编辑的生图提示词。",
+            })
+          }
+        >
+          生成提示词
         </button>
       </div>
+      {Object.entries(s.task_outputs || {})
+        .filter(([node]) => ["2", "3", "4", "6"].includes(node))
+        .map(([node, value]) => (
+          <details
+            className="task-result"
+            key={node}
+            open={value.status !== "已确认"}
+          >
+            <summary>
+              {s.nodes[Number(node)]} · {value.status}
+            </summary>
+            <pre>{value.text}</pre>
+            {node === "3" ? (
+              <button
+                onClick={() => {
+                  if (
+                    prompt.trim() &&
+                    !window.confirm(
+                      "将生成的提示词载入编辑器？尚未保存的内容将被替换。",
+                    )
+                  )
+                    return;
+                  setPrompt(value.text);
+                  setEditing(true);
+                }}
+              >
+                载入提示词编辑器
+              </button>
+            ) : (
+              <button
+                disabled={s.busy}
+                onClick={() =>
+                  run("apply_output", { node: Number(node), text: value.text })
+                }
+              >
+                确认此结果
+              </button>
+            )}
+          </details>
+        ))}
+      {annotations.length > 0 && (
+        <p className="notice">提示词包含采纳的 AI 补全建议，保存前请核对。</p>
+      )}
       {editing && (
         <section className="prompt-editor">
           <label>
@@ -144,6 +218,36 @@ export default function ImagesPage() {
             />
           </label>
           <div className="actions">
+            <button
+              disabled={s.busy}
+              onClick={() =>
+                openCompletion(
+                  { type: "prompt", id: s.scene, text: prompt },
+                  ["text"],
+                  (changes, original) => {
+                    if (currentPrompt.current !== original.text) {
+                      notify("提示词已变化，请重新补全，避免覆盖新编辑。");
+                      return false;
+                    }
+                    const c = changes.find((c) => c.field === "text");
+                    if (c) {
+                      setPrompt(c.value);
+                      setAnnotations((v) => [
+                        ...v,
+                        {
+                          source: "AI建议",
+                          reason: c.reason,
+                          time: new Date().toISOString(),
+                        },
+                      ]);
+                      setEditing(true);
+                    }
+                  },
+                )
+              }
+            >
+              AI补全
+            </button>
             <button className="primary" onClick={savePrompt}>
               保存提示词
             </button>
@@ -183,7 +287,18 @@ export default function ImagesPage() {
             <Empty
               title="尚无本情节的候选插图"
               text="先确认资产和提示词，再使用独立图片连接生成。也可先讨论构图与画面方案。"
-              action={<button onClick={() => openAI(2)}>讨论插图方案</button>}
+              action={
+                <button
+                  onClick={() =>
+                    run("send", {
+                      node: 2,
+                      message: "生成当前情节的单个插图方案。",
+                    })
+                  }
+                >
+                  生成插图方案
+                </button>
+              }
             />
           )}
           {picture && (
@@ -194,7 +309,15 @@ export default function ImagesPage() {
                   {picture.job.model || picture.job.kind}
                 </span>
                 <div className="actions">
-                  <button onClick={() => openAI(6, null, picture.path)}>
+                  <button
+                    onClick={() =>
+                      run("send", {
+                        node: 6,
+                        attachments: [picture.path],
+                        message: "审核本张图片，给出有依据的单轮检查结果。",
+                      })
+                    }
+                  >
                     审核本张图片
                   </button>
                   <button
@@ -275,8 +398,8 @@ export default function ImagesPage() {
                           })
                     }
                   >
-                    {a?.thumbnail ? (
-                      <img src={a.thumbnail} alt="" />
+                    {r.asset?.thumbnail ? (
+                      <img src={r.asset.thumbnail} alt="" />
                     ) : (
                       <span className="reference-glyph">
                         {r.name.slice(0, 1)}
@@ -288,6 +411,34 @@ export default function ImagesPage() {
                     </span>
                     <span>›</span>
                   </button>
+                  {a && (
+                    <label>
+                      此情节采用
+                      <select
+                        value={s.scene_variant_choices?.[a.id] || "auto"}
+                        onChange={(e) =>
+                          run("select_variant", {
+                            id: a.id,
+                            variant: e.target.value,
+                            scene: s.scene,
+                          })
+                        }
+                      >
+                        <option value="auto">继承本章选择</option>
+                        <option value="base">主卡</option>
+                        {(a.variants || []).map((v) => (
+                          <option key={v.id} value={v.id}>
+                            {v.title}
+                          </option>
+                        ))}
+                      </select>
+                      <small>
+                        {r.asset?.image
+                          ? "参考图片＋文字（需接口支持及映射）"
+                          : "仅文字设定"}
+                      </small>
+                    </label>
+                  )}
                   {a && (
                     <button
                       className="quiet small state-link"
@@ -313,7 +464,7 @@ export default function ImagesPage() {
             <p className="muted small prose">
               {prompt
                 ? prompt.slice(0, 300)
-                : "尚未填写提示词。你可以与 AI 多轮讨论，也可手工输入最终方案。"}
+                : "尚未填写提示词。可生成单轮方案、手工编辑，或通过 AI 补全提供建议。"}
             </p>
             <button className="quiet small" onClick={() => setEditing(true)}>
               编辑方案与提示词

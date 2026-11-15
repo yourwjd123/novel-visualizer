@@ -177,38 +177,64 @@ def main():
                 c.wait(
                     "document.querySelector('.under-image').innerText.includes('已选为成果')"
                 )
-                c.click("讨论方案")
-                c.wait("document.querySelector('.assistant:not([hidden])')")
-                c.fill(
-                    "textarea[aria-label='本轮对话输入']", "保持交信动作与原文一致。"
-                )
-                c.click("发送", ".assistant-compose button")
-                c.wait("document.querySelector('.message.message-assistant')", 20)
-                c.screenshot(output / "assistant.png")
-                c.click("采用到待确认方案 →", ".message.message-assistant button")
-                c.wait("document.querySelector('.assistant-body textarea')")
-                c.click("确认最终方案", ".assistant-body button")
-                c.evaluate(
-                    "document.querySelector('[aria-label=\"收起 AI 助手\"]').click()"
-                )
                 c.click("原文与情节", ".workspace-tabs button")
                 c.click("导入下一片段")
                 c.wait("document.querySelector('.modal textarea')")
-                c.fill(".modal form input", "端到端测试片段")
-                c.fill(".modal form textarea", "甲来到桥边。\n\n乙递给甲一封信。")
+                c.fill(".modal form input", "独立章节测试")
+                c.fill(
+                    ".modal form textarea",
+                    "甲来到桥边。原文哨兵。\n\n乙递给甲一封信。\n\n甲收起信离开。",
+                )
                 c.click("保留为原文片段", ".modal button")
-                c.wait("document.querySelectorAll('.paragraph').length===2")
-                c.wait("document.querySelectorAll('.scene-card').length===0")
-                c.click("分析并生成候选", ".source-toolbar button")
-                c.wait("document.querySelectorAll('.scene-card').length===2", 20)
+                c.wait("document.querySelector('[aria-label=\"粘贴文本归属\"]')")
+                c.click("确认章节归属")
+                c.wait("document.querySelectorAll('.paragraph').length===3")
+                assert (
+                    c.evaluate("document.querySelectorAll('.scene-card').length") == 0
+                )
+                c.click("设置", ".system-sidebar button")
+                c.wait("document.querySelector('.settings-sheet select')")
+                c.fill(".settings-sheet select", "node-0")
+                c.fill("textarea[aria-label='默认语言前置提示词']", "测试用户前置规则")
+                c.click("保存默认语言配置")
                 c.wait(
-                    "[...document.querySelectorAll('.page-heading button')].some(b=>b.textContent==='确认全部情节'&&!b.disabled)"
+                    "document.querySelector('.toast')?.innerText.includes('默认语言配置已保存')"
+                )
+                c.click("外观", ".settings-tabs button")
+                assert "当前项目补充规则" not in c.evaluate(
+                    "document.querySelector('.settings-sheet').innerText"
+                )
+                c.click("视觉资产库", ".workspace-tabs button")
+                c.click("构建本章资产候选", ".page-heading button")
+                c.wait("document.querySelector('.asset-candidates .image-card')", 20)
+                c.wait(
+                    "document.querySelector('.assistant-run-status').innerText.includes('资产候选待审核')"
+                )
+                c.evaluate(
+                    "document.querySelector('[aria-label=\"收起 AI 助手\"]').click()"
+                )
+                c.screenshot(output / "chapter-candidates.png")
+                c.click("编辑候选")
+                c.wait("document.querySelector('.asset-editor')")
+                c.fill(".asset-editor textarea", "候选人工描述")
+                c.fill("select[aria-label='资产等级']", "核心")
+                c.click("保存资产修改", ".asset-editor button")
+                c.wait("!document.querySelector('.asset-editor')")
+                c.click("确认入库")
+                c.wait("!document.querySelector('.asset-candidates')")
+                c.click("原文与情节", ".workspace-tabs button")
+                assert (
+                    c.evaluate("document.querySelectorAll('.scene-card').length") == 0
+                )
+                c.click("分析并生成候选", ".source-toolbar button")
+                c.wait("document.querySelectorAll('.scene-card').length===3", 20)
+                c.wait(
+                    "document.querySelector('textarea[aria-label=\"本章梗概\"]').value.length>0"
                 )
                 c.click("确认全部情节", ".page-heading button")
                 c.wait(
-                    "document.querySelector('.status-line').innerText.includes('拆分已确认')"
+                    "document.querySelector('.scene-card .tags').innerText.includes('演示资产')"
                 )
-                # Card surface selects, badges toggle, delete and undo retain identity.
                 c.evaluate("document.querySelectorAll('.scene-card')[1].click()")
                 c.wait(
                     "document.querySelectorAll('.scene-card')[1].classList.contains('selected')"
@@ -224,33 +250,44 @@ def main():
                 c.evaluate(
                     "[...document.querySelectorAll('.scene-card')[1].querySelectorAll('button')].find(b=>b.textContent==='删除').click()"
                 )
-                c.wait("document.querySelectorAll('.scene-card').length===1")
-                c.click("撤销调整")
                 c.wait("document.querySelectorAll('.scene-card').length===2")
-                c.click("解析本情节资产 →", ".page-heading button")
+                c.click("撤销调整")
+                c.wait("document.querySelectorAll('.scene-card').length===3")
+                c.evaluate("document.querySelector('.scene-card .asset-tag').click()")
+                c.wait("document.querySelector('.asset-editor')")
+                c.evaluate(
+                    "document.querySelector('[aria-label=\"关闭资产详情\"]').click()"
+                )
+                c.wait("!document.querySelector('.asset-editor')")
+                assert "AI补全" not in c.evaluate(
+                    "document.querySelector('.scene-grid').innerText"
+                )
+                c.screenshot(output / "source.png")
+                # Task history is separate from free consultation. Closing never waits on save.
+                c.evaluate(
+                    "document.querySelector('[aria-label=\"收起 AI 助手\"]').click()"
+                )
+                c.click("✧ AI 助手", ".ai-launch")
                 c.wait(
-                    "document.querySelector('.assistant:not([hidden]) .message.message-assistant')",
+                    "document.querySelector('.assistant-tabs .active').textContent==='自由咨询'"
+                )
+                c.fill("textarea[aria-label='本轮对话输入']", "依据梗概咨询状态。")
+                c.click("发送", ".assistant-compose button")
+                c.wait("document.querySelector('.message.message-assistant')", 20)
+                c.wait("document.querySelector('.messages').innerText.length>30000")
+                c.screenshot(output / "assistant.png")
+                c.fill("textarea[aria-label='本轮对话输入']", "独立的第二个问题。")
+                c.click("发送", ".assistant-compose button")
+                c.wait(
+                    "document.querySelectorAll('.message.message-assistant').length===2",
                     20,
                 )
                 c.wait(
-                    "document.querySelector('.assistant-run-status').innerText.includes('任务完成')"
+                    "!document.querySelector('.assistant-compose').innerText.includes('停止等待')"
                 )
-                c.wait(
-                    "document.querySelector('.assistant .messages').innerText.includes('演示资产')"
-                )
-                assert (
-                    c.evaluate(
-                        "document.querySelector('.assistant .messages').innerText.length"
-                    )
-                    > 30000
-                )
-                # A real pointer click on the close control works with a long reply.
                 close_rect = c.evaluate(
-                    "(()=>{const r=document.querySelector('[aria-label=\"收起 AI 助手\"]').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,right:r.right,bottom:r.bottom}})()"
+                    "(()=>{const r=document.querySelector('[aria-label=\"收起 AI 助手\"]').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()"
                 )
-                assert close_rect["right"] <= c.evaluate("innerWidth")
-                assert close_rect["bottom"] <= c.evaluate("innerHeight")
-                c.screenshot(output / "asset-extraction.png")
                 for event in ("mousePressed", "mouseReleased"):
                     c.call(
                         "Input.dispatchMouseEvent",
@@ -263,39 +300,94 @@ def main():
                         ),
                     )
                 c.wait("document.querySelector('.assistant').hidden")
-                c.click("✧ AI 助手", ".ai-launch")
-                c.wait("!document.querySelector('.assistant').hidden")
-                # Escape and launcher toggle work independently of save callbacks.
-                c.call(
-                    "Input.dispatchKeyEvent",
-                    dict(
-                        type="keyDown",
-                        key="Escape",
-                        code="Escape",
-                        windowsVirtualKeyCode=27,
-                    ),
+                c.click("视觉资产库", ".workspace-tabs button")
+                c.wait(
+                    "[...document.querySelectorAll('.asset-grid .image-card')].some(e=>e.innerText.includes('演示资产'))"
                 )
-                c.wait("document.querySelector('.assistant').hidden")
-                c.click("✧ AI 助手", ".ai-launch")
-                c.wait("!document.querySelector('.assistant').hidden")
-                c.click("✧ AI 助手", ".ai-launch")
-                c.wait("document.querySelector('.assistant').hidden")
+                c.evaluate(
+                    "[...document.querySelectorAll('.asset-grid .image-card')].find(e=>e.innerText.includes('演示资产')).querySelector('.image-hit').click()"
+                )
+                c.wait("document.querySelector('.asset-editor')")
+                before = c.evaluate(
+                    "document.querySelector('.asset-editor textarea').value"
+                )
+                c.click("AI补全", ".asset-editor button")
+                c.wait(
+                    "document.querySelector('.assistant-tabs .active').textContent==='AI 补全'"
+                )
+                c.click("生成补全建议", ".assistant-compose button")
+                c.wait("document.querySelector('.completion-change')", 20)
+                assert (
+                    c.evaluate("document.querySelector('.asset-editor textarea').value")
+                    == before
+                )
+                c.click("采用选中建议到编辑器")
+                c.wait(
+                    "document.querySelector('.asset-editor textarea').value.includes('演示补全')"
+                )
+                c.click("保存资产修改", ".asset-editor button")
+                c.wait("!document.querySelector('.asset-editor')")
+                c.evaluate(
+                    "[...document.querySelectorAll('.asset-grid .image-card')].find(e=>e.innerText.includes('演示资产')).querySelectorAll('footer button')[0].click()"
+                )
+                c.wait(
+                    "!([...document.querySelectorAll('.asset-grid .image-card')].some(e=>e.innerText.includes('演示资产')))"
+                )
+                c.click("回收站")
+                c.click("恢复资产")
+                c.click("资产档案")
+                c.wait(
+                    "[...document.querySelectorAll('.asset-grid .image-card')].some(e=>e.innerText.includes('演示资产'))"
+                )
+                c.click("场景插图", ".workspace-tabs button")
+                c.wait("document.querySelector('.shot-toolbar')")
+                c.click("查看 / 编辑提示词")
+                c.fill(".prompt-editor textarea", "当前插图提示词")
+                c.click("AI补全", ".prompt-editor button")
+                c.click("生成补全建议", ".assistant-compose button")
+                c.wait("document.querySelector('.completion-change')", 20)
+                c.click("采用选中建议到编辑器")
+                c.wait(
+                    "document.querySelector('.prompt-editor textarea').value.includes('演示补全')"
+                )
+                c.click("保存提示词", ".prompt-editor button")
+                c.click("生成提示词", ".shot-toolbar button")
+                c.wait("document.querySelector('.task-result pre')", 20)
+                c.evaluate(
+                    "document.querySelector('[aria-label=\"收起 AI 助手\"]').click()"
+                )
+                c.click("载入提示词编辑器")
+                c.wait(
+                    "document.querySelector('.prompt-editor textarea').value.includes('演示输出')"
+                )
+                c.screenshot(output / "images.png")
+                c.click("保存提示词", ".prompt-editor button")
                 c.click("设置", ".system-sidebar button")
                 c.wait("document.querySelector('.settings-sheet select')")
-                assert "语言模型配置" in c.evaluate(
-                    "document.querySelector('.settings-tabs').innerText"
-                )
-                c.fill(".settings-sheet select", "node-0")
-                c.fill(".settings-sheet input[type=number]", "10000")
-                c.click("保存默认语言配置")
-                c.wait(
-                    "document.querySelector('.toast')?.innerText.includes('默认语言配置已保存')"
-                )
                 c.click("自定义节点接口", ".settings-tabs button")
                 c.wait("document.querySelector('.settings-sheet textarea')")
                 c.fill(".settings-sheet input[type=number]", "1234")
                 c.click("保存此节点配置")
                 c.screenshot(output / "settings.png")
+                # Inspect actual persisted requests; no renderer mock or network fixture here.
+                jobs = [
+                    json.loads(p.read_text("utf-8"))
+                    for p in Path(data).rglob("任务记录.json")
+                ]
+                consultation = [j for j in jobs if j.get("mode") == "consult"]
+                assert len(consultation) == 2
+                for j in consultation:
+                    assert (
+                        len(j["messages"]) == 1
+                        and j["params"]["system"] == "测试用户前置规则"
+                    )
+                    assert "原文哨兵" not in j["context"]
+                for j in jobs:
+                    if j.get("mode") == "complete":
+                        assert (
+                            "原文哨兵" not in j["context"]
+                            and "【当前编辑对象全文】" in j["context"]
+                        )
                 c.click("成果集", ".workspace-tabs button")
                 c.wait(
                     "document.querySelectorAll('.result-grid .image-card').length===1"
@@ -359,7 +451,11 @@ def main():
                                 "gallery trash/restore",
                                 "scene association",
                                 "choose result",
-                                "multi-round demo provider",
+                                "single-turn task and consultation contexts",
+                                "chapter assets before plot, grades and mapping",
+                                "asset/prompt completion diff and explicit adoption",
+                                "asset archive and restore",
+                                "front prefix and no project rule editor",
                                 "import without AI",
                                 "review candidates before confirm",
                                 "default and custom interface settings",

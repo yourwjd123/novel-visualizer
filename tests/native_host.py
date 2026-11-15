@@ -16,6 +16,8 @@ if os.environ.get("NOVELVIZ_E2E_LONG_RESPONSE") == "1":
 
     def long_response(params, *args, **kwargs):
         answer = original_text_call(params, *args, **kwargs)
+        if params.get("template", {}).get("id") == "consult":
+            return answer + "演示长回复，用于测试浮窗交互。" * 3000
         if (
             params.get("provider") == "demo"
             and params.get("template", {}).get("format") == "assets"

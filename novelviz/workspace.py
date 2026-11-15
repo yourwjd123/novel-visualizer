@@ -13,6 +13,7 @@ import json
 import shutil
 from pathlib import Path
 
+from .tasks import TaskMixin
 from . import credentials
 from .connections import clean_profile, credential_id
 from .prompts import (
@@ -26,7 +27,7 @@ from .prompts import (
 from .storage import DEFAULTS, NODES, Project, Store, now, redact, safe_name, uid
 
 
-class Workspace:
+class Workspace(TaskMixin):
     def __init__(self, root):
         self.store = Store(root, create_default=False)
         self.account = None
@@ -210,6 +211,9 @@ class Workspace:
         result["templates"] = self.store.templates(self.account)
         result["defaults"] = self.store.node_defaults(self.account)
         result["image_settings"] = self.store.image_defaults(self.account)
+        from .tasks import COMPLETION_GUIDANCE
+
+        result["completion_guidance_default"] = COMPLETION_GUIDANCE
         if settings.get("background"):
             from PySide6.QtGui import QImage
 
@@ -231,8 +235,29 @@ class Workspace:
             project=p.meta,
             progress=p.progress(),
             segments=p.segments(),
+            chapter_variant_choices=p.config.get("chapter_variant_selections", {}).get(
+                self.segment, {}
+            ),
+            scene_variant_choices=p.config.get("scene_variant_selections", {}).get(
+                self.scene, {}
+            ),
+            archived_chapters=[
+                r
+                for r in p.segments(include_archived=True)
+                if r["id"] in p.config.get("archived_chapters", [])
+            ],
             rules=p.config.get("rules", ""),
             depth=p.config.get("split_depth", "中 · 连续情节"),
+            asset_candidates=copy.deepcopy(
+                p.config.get("asset_candidates", {}).get(self.segment, [])
+            ),
+            asset_trash=[
+                a for a in p.assets(include_archived=True) if a.get("archived")
+            ],
+            task_outputs=copy.deepcopy(
+                p.config.get("task_outputs", {}).get(self.scene, {})
+            ),
+            chapter_summary=self.chapter_summary() if self.segment else {},
         )
         result["drafts"] = p.config.get("split_drafts", {})
         if self.segment:
@@ -243,6 +268,7 @@ class Workspace:
             ]
         for a in p.assets():
             a = copy.deepcopy(a)
+            a["effective"] = p.effective_asset(a, self.segment)
             a["thumbnail"] = self.image(a.get("image"))
             a["images"] = a.get("images", [])
             a["uses"] = [
@@ -252,13 +278,18 @@ class Workspace:
             ]
             result["assets"].append(a)
         result["requirements"] = p.scene_assets(self.scene) if self.scene else []
+        for requirement in result["requirements"]:
+            if requirement.get("asset"):
+                requirement["asset"]["thumbnail"] = self.image(
+                    requirement["asset"].get("image")
+                )
         result["overrides"] = p.config.get("scene_overrides", {}).get(self.scene, {})
         result["prompt"] = p.config.get("image_prompt_drafts", {}).get(self.scene, "")
         if not result["prompt"] and self.scene:
             final = p.load_node(self.scene, 3)
             if final["status"] == "已确认":
                 result["prompt"] = final["final"]
-        for j in p.jobs():
+        for job_index, j in enumerate(p.jobs()):
             record = {
                 k: v
                 for k, v in j.items()
@@ -272,6 +303,10 @@ class Workspace:
                     "submitted_workflow",
                 )
             }
+            record["effective_max_tokens"] = j.get("params", {}).get("max_tokens")
+            if job_index == 0:
+                record["system_preview"] = j.get("params", {}).get("system", "")
+                record["context_preview"] = j.get("context", "")
             record["phase"] = (
                 "已完成" if j["status"] == "success" else j.get("phase", "等待模型响应")
             )
@@ -425,6 +460,7 @@ class Workspace:
             (r["id"] for r in available if r["id"] == self.scene),
             available[0]["id"] if available else None,
         )
+        self.map_assets_to_scenes()
 
     def save_asset(self, data):
         self.require_project()
@@ -442,12 +478,24 @@ class Workspace:
             "evidence",
             "missing",
             "notes",
+            "priority",
+            "priority_reason",
+            "appearances",
+            "chapter_levels",
+            "completion_annotations",
         )
         record = copy.deepcopy(
             original
             or dict(source="用户自定", review="待确认", description="", images=[])
         )
         record.update({k: v for k, v in data.items() if k in fields})
+        if record.get("priority", "建议") not in ("核心", "重要", "建议", "可选择"):
+            raise ValueError("资产等级无效")
+        if self.segment and "priority" in data:
+            record.setdefault("chapter_levels", {})[self.segment] = dict(
+                priority=record["priority"],
+                reason=record.get("priority_reason", "用户设定"),
+            )
         return self.project.save_asset(record)
 
     def add_reference(self, asset_id, path):
@@ -540,6 +588,7 @@ class Workspace:
             endpoint=profile["endpoint"],
             model=profile["model"],
             vision=profile["vision"],
+            structured_output=profile.get("structured_output", False),
             connection_override=override,
             parameter_override=parameter_override,
             max_tokens=defaults.get("max_tokens", profile["max_tokens"])
@@ -551,10 +600,30 @@ class Workspace:
             template=template,
             template_id=template["id"],
             supplement=defaults.get("supplement", ""),
-            system=assemble(
+            preface_override=defaults.get("preface_override", False),
+            preface=(
+                defaults.get("preface", "")
+                if defaults.get("preface_override", False)
+                else settings.get("language_preface", "")
+            ),
+            system=(
+                (
+                    defaults.get("preface", "")
+                    if defaults.get("preface_override", False)
+                    else settings.get("language_preface", "")
+                )
+                + "\n\n"
+                if (
+                    defaults.get("preface", "")
+                    if defaults.get("preface_override", False)
+                    else settings.get("language_preface", "")
+                )
+                else ""
+            )
+            + assemble(
                 template,
                 defaults.get("supplement", ""),
-                self.project.config.get("rules", "") if self.project else "",
+                "",
             ),
         )
 
@@ -563,7 +632,7 @@ class Workspace:
             if asset not in {a["id"] for a in self.project.assets()}:
                 raise ValueError("资产不存在")
             return "asset_" + asset
-        scope = self.segment if node in (0, 7) else self.scene
+        scope = self.segment if node in (0, 1, 7) else self.scene
         if not scope:
             raise ValueError("请先导入原文并确认情节，或指定资产")
         return scope
@@ -738,6 +807,14 @@ class Workspace:
             data = self.project.load_node(scope, node)
             data["final"] = text
             self.project.confirm(scope, node, data)
+            output = (
+                self.project.config.get("task_outputs", {})
+                .get(scope, {})
+                .get(str(node))
+            )
+            if output:
+                output["status"] = "已确认"
+                self.project.save_config()
             self.project.invalidate_dependents(scope, node, self.segment)
             if node == 3 and not asset:
                 self.project.config.setdefault("image_prompt_drafts", {})[
@@ -757,76 +834,8 @@ class Workspace:
             self.keys[self.account["id"] + ":" + p["id"]] = key
         self.store.save_connection(self.account, p)
 
-    def prepare_text(self, node, message, asset=None, attachments=()):
-        self.require_project()
-        self.guard()
-        if not message.strip():
-            raise ValueError("请输入本轮要求")
-        params = self.parameters(node)
-        scope = self.scope(node, asset)
-        data = self.project.load_node(scope, node)
-        context = self.context(node, asset)
-        data["messages"].append(
-            dict(
-                role="user", content=message, time=now(), attachments=list(attachments)
-            )
-        )
-        data["params"] = params
-        data["status"] = "运行中"
-        self.project.secrets = self.secrets()
-        self.project.save_node(scope, node, data)
-        messages = copy.deepcopy(data["messages"])
-        compact = self.store.settings(self.account).get("compact_requests", True)
-        if compact and len(messages) > 5:
-            # Preserve every user instruction; superseded model drafts stay on disk.
-            messages = [
-                m
-                for i, m in enumerate(messages)
-                if m["role"] == "user" or i >= len(messages) - 3
-            ]
-        if (
-            compact
-            and data.get("final")
-            and not any(m["content"] == data["final"] for m in messages)
-        ):
-            context += "\n【当前有效方案】\n" + data["final"]
-        paths = set(attachments)
-        if not compact:
-            paths |= {rel for m in data["messages"] for rel in m.get("attachments", [])}
-        actual = [self.file(rel) for rel in sorted(paths)]
-        job = dict(
-            id=uid(),
-            kind=NODES[node],
-            created=now(),
-            status="running",
-            segment=self.segment,
-            scene=self.scene,
-            scope=scope,
-            node=node,
-            params=params,
-            context=context,
-            messages=messages,
-            request_summary=dict(
-                history_turns=len(messages),
-                stored_turns=len(data["messages"]),
-                attachments=len(paths),
-                estimated_input_tokens=max(
-                    1,
-                    int(
-                        (
-                            len(params["system"])
-                            + len(context)
-                            + sum(len(m["content"]) for m in messages)
-                        )
-                        * 0.8
-                    ),
-                ),
-            ),
-            phase="等待模型响应",
-            attachments=sorted(paths),
-        )
-        self.project.save_job(job)
-        return job, data, actual, self.key(params["connection_id"])
+    def prepare_text(self, node, message, asset=None, attachments=(), **options):
+        return self.prepare_single(node, message, asset, attachments, **options)
 
     def finish_text(self, job, answer=None, error=None):
         data = self.project.load_node(job["scope"], job["node"])

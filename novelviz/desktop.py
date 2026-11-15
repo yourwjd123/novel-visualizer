@@ -229,7 +229,9 @@ class Bridge(QObject):
         elif op == "select":
             w.set_selection(d.get("segment"), d.get("scene"))
         elif op == "import_text":
-            w.import_text(d["name"], d["text"])
+            w.paste_chapter(
+                d["name"], d["text"], d.get("target"), bool(d.get("prepend"))
+            )
         elif op == "upload":
             return self.upload(d)
         elif op == "import_file":
@@ -245,6 +247,45 @@ class Bridge(QObject):
             w.confirm_split(d["rows"])
         elif op == "review_scenes":
             w.review_scenes(d["rows"], d.get("ids", []), d.get("status", "候选"))
+        elif op == "chapter_action":
+            w.chapter_action(d["id"], bool(d.get("restore")))
+        elif op == "save_variant":
+            return w.save_variant(
+                d["id"], d["title"], d["data"], d.get("variant_id"), d.get("image", "")
+            )
+        elif op == "select_variant":
+            w.select_variant(d["id"], d["variant"], d.get("scene"))
+        elif op == "save_summary":
+            w.save_summary(d.get("text", ""))
+        elif op == "asset_candidate":
+            w.candidate_action(d["id"], d["action"], d.get("data"))
+        elif op == "archive_asset":
+            w.archive_asset(d["id"], bool(d.get("restore")))
+        elif op == "assistant_read":
+            w.require_project()
+            node = self.node(d)
+            scope = d["scope"]
+            allowed = {
+                w.segment,
+                "consult_" + w.segment,
+                "complete_" + w.segment,
+                w.scene,
+            }
+            if scope not in allowed:
+                raise ValueError("助手作用域无效")
+            return w.project.load_node(scope, node)
+        elif op == "validate_task":
+            w.require_project()
+            w.guard()
+            job = next(j for j in w.project.jobs() if j["id"] == d["job"])
+            w.process_task_output(job, d["text"], repaired=True)
+            job.update(
+                output=d["text"],
+                validation_error="",
+                status="success",
+                phase="候选已校验",
+            )
+            w.project.save_job(job)
         elif op == "set_depth":
             w.require_project()
             w.project.config["split_depth"] = str(d["depth"])
@@ -307,6 +348,9 @@ class Bridge(QObject):
         elif op == "save_prompt":
             w.require_project()
             w.project.config.setdefault("image_prompt_drafts", {})[w.scene] = d["text"]
+            w.project.config.setdefault("image_prompt_annotations", {})[w.scene] = (
+                d.get("annotations", [])
+            )
             w.project.save_config()
         elif op == "node_parameters":
             return w.parameters(self.node(d), strict=False)
@@ -491,7 +535,11 @@ class Bridge(QObject):
         if data.get("asset"):
             return w.scope(node, data["asset"])
         scope = data.get("scope") or w.scope(node)
-        if node in (0, 7):
+        consultation = {"consult_" + s["id"] for s in w.project.segments()}
+        completion = {"complete_" + s["id"] for s in w.project.segments()}
+        if scope in consultation | completion:
+            return scope
+        if node in (0, 1, 7):
             if scope not in {s["id"] for s in w.project.segments()}:
                 raise ValueError("原文片段已变化")
         elif not w.project.scene(scope):
@@ -562,14 +610,12 @@ class Bridge(QObject):
         w.require_project()
         w.guard()
         node = self.node(d)
-        if node not in (0, 7) and not d.get("asset"):
+        mode = d.get("mode", "task")
+        if mode == "task" and node not in (0, 1, 7) and not d.get("asset"):
             scene = w.project.scene(w.scene) if w.scene else None
             if not scene or scene.get("review", "已确认") != "已确认":
                 raise ValueError("请先确认当前情节")
-        record = w.project.load_node(w.scope(node, d.get("asset")), node)
-        refs = set(d.get("attachments", []))
-        if not w.store.settings(w.account).get("compact_requests", True):
-            refs |= {f for m in record["messages"] for f in m.get("attachments", [])}
+        refs = set(d.get("attachments", [])) if mode == "task" else set()
         paths = [w.file(f) for f in refs]
         params = w.parameters(node)
         if (
@@ -583,7 +629,15 @@ class Bridge(QObject):
         if not self.attachment_confirmation(params, paths):
             return dict(cancelled=True)
         job, _, paths, key = w.prepare_text(
-            node, d["message"], d.get("asset"), d.get("attachments", [])
+            node,
+            d.get("message", ""),
+            d.get("asset"),
+            list(refs),
+            mode=mode,
+            target=d.get("target"),
+            fields=d.get("fields"),
+            paragraph_range=d.get("paragraph_range"),
+            reference=d.get("reference", ""),
         )
         job["auto_split_candidates"] = bool(d.get("split"))
 
@@ -624,8 +678,16 @@ class Bridge(QObject):
         prompt = str(d.get("prompt", "")).strip()
         if not prompt:
             raise ValueError("请先填写并确认本次提示词")
-        if config.get("generation_rules"):
-            prompt += "\n\n【图片节点约束】\n" + config["generation_rules"]
+        image_defaults = w.store.image_defaults(w.account)
+        preface = (
+            task_config.get("preface", "")
+            if task_config.get("preface_override", False)
+            else image_defaults.get(
+                "preface", image_defaults.get("generation_rules", "")
+            )
+        )
+        if preface:
+            prompt = preface + "\n\n" + prompt
         rows = w.project.scene_assets(w.scene) if w.scene and not asset else []
         issues = [r["name"] + "：" + r["problem"] for r in rows if r["problem"]]
         if not asset and (
@@ -653,6 +715,18 @@ class Bridge(QObject):
                             "description", "档案缺失；依据用户已确认方案"
                         )
                     )
+                    + "\n结构化设定："
+                    + json.dumps(
+                        {
+                            k: (r.get("asset") or {}).get(k, [])
+                            for k in ("attributes", "states")
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n采用版本："
+                    + (r.get("asset") or {})
+                    .get("selected_variant", {})
+                    .get("title", "主卡")
                     + (
                         "\n本情节状态：" + overrides[r["asset_id"]]
                         if r.get("asset_id") in overrides
@@ -775,18 +849,21 @@ class Bridge(QObject):
                         )
                 if text:
                     w.finish_text(job, value if error is None else None, error)
-                    if error is None and job.get("auto_split_candidates"):
+                    if error is None:
                         try:
-                            from .prompts import parse_object, validate_scenes
-
-                            rows = validate_scenes(
-                                parse_object(value),
-                                len(w.project.paragraphs(job["segment"])),
+                            w.process_task_output(job, value)
+                            job["phase"] = (
+                                "回复已保存"
+                                if job.get("mode") == "consult"
+                                else "结果待审核"
                             )
-                            w.save_split(rows)
                         except ValueError as e:
-                            job["validation_error"] = str(e)
-                            w.project.save_job(job)
+                            job.update(
+                                status="invalid",
+                                validation_error=str(e),
+                                phase="输出待修正",
+                            )
+                        w.project.save_job(job)
                 else:
                     if error:
                         job.update(
@@ -909,7 +986,7 @@ class LocalPage(QWebEnginePage):
 class Desktop(QMainWindow):
     def __init__(self, root):
         super().__init__()
-        self.setWindowTitle("墨境 · 小说文本可视化 · v0.4.1-beta.1 测试版")
+        self.setWindowTitle("墨境 · 小说文本可视化 · v0.5.1-beta.1 测试版")
         self.bridge = Bridge(root, self)
         self.view = QWebEngineView(self)
         page = LocalPage(self.view)

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Plus,
   Search,
@@ -21,7 +21,33 @@ export default function AssetsPage() {
     [view, setView] = useState("records"),
     [gallery, setGallery] = useState([]),
     [trash, setTrash] = useState([]),
-    [selected, setSelected] = useState(new Set());
+    [selected, setSelected] = useState(new Set()),
+    [range, setRange] = useState([1, Math.min(20, s.paragraphs.length)]),
+    [sort, setSort] = useState("等级");
+  useEffect(
+    () => setRange([1, Math.min(20, s.paragraphs.length)]),
+    [s.segment],
+  );
+  const levels = ["核心", "重要", "建议", "可选择"];
+  const pending = (s.asset_candidates || []).filter(
+    (a) =>
+      !a.accepted &&
+      !a.deleted &&
+      (filter === "全部" || a.kind === filter) &&
+      a.name.includes(search),
+  );
+  const level = (a) =>
+    a.chapter_levels?.[s.segment]?.priority ||
+    (a.chapter_levels ? "建议" : a.priority) ||
+    "建议";
+  const order = (a) =>
+    Math.min(
+      ...(a.appearances || [])
+        .filter((e) => e.segment === s.segment)
+        .map((e) => e.paragraph),
+      a.first_paragraph || Infinity,
+    );
+
   const stamp = s.assets.map((a) => a.id + ":" + a.revision).join("|");
   useEffect(() => {
     if (view === "gallery")
@@ -38,6 +64,12 @@ export default function AssetsPage() {
       (filter === "全部" || a.kind === filter) &&
       (a.name + " " + (a.aliases || []).join(" ")).includes(search),
   );
+  rows.sort(
+    (a, b) =>
+      (sort === "等级"
+        ? levels.indexOf(level(a)) - levels.indexOf(level(b))
+        : 0) || order(a) - order(b),
+  );
   const pictures = gallery.filter(
     (r) => (filter === "全部" || r.kind === filter) && r.name.includes(search),
   );
@@ -48,8 +80,18 @@ export default function AssetsPage() {
         subtitle="人物、场景与道具，在本小说的各个片段中复用。"
         actions={
           <>
-            <button disabled={!s.scene} onClick={() => openAI(1)}>
-              解析当前情节资产
+            <button
+              disabled={!s.segment || s.busy}
+              onClick={() =>
+                run("send", {
+                  node: 1,
+                  paragraph_range: range,
+                  message:
+                    "依据本批章节原文构建资产候选；按出现位置排序，建议当前章节的重要等级。仅输出资产 JSON。",
+                })
+              }
+            >
+              构建本章资产候选
             </button>
             <button
               className="primary"
@@ -69,6 +111,52 @@ export default function AssetsPage() {
           </>
         }
       />
+      <div className="source-toolbar">
+        <label>
+          当前章节
+          <select
+            value={s.segment || ""}
+            disabled={s.busy}
+            onChange={(e) => run("select", { segment: e.target.value })}
+          >
+            {s.segments.map((seg) => (
+              <option key={seg.id} value={seg.id}>
+                {seg.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          本批起始段
+          <input
+            type="number"
+            min="1"
+            max={s.paragraphs.length}
+            value={range[0]}
+            onChange={(e) => setRange([Number(e.target.value), range[1]])}
+          />
+        </label>
+        <label>
+          结束段
+          <input
+            type="number"
+            min={range[0]}
+            max={s.paragraphs.length}
+            value={range[1]}
+            onChange={(e) => setRange([range[0], Number(e.target.value)])}
+          />
+        </label>
+        <span className="small muted">
+          可分批构建，不自动追加调用；不依赖情节拆分。
+        </span>
+        <label>
+          排序
+          <select value={sort} onChange={(e) => setSort(e.target.value)}>
+            <option>等级</option>
+            <option>出现顺序</option>
+          </select>
+        </label>
+      </div>
       <div className="view-switch" role="group" aria-label="资产视图">
         {[
           ["records", "资产档案"],
@@ -110,6 +198,161 @@ export default function AssetsPage() {
       </div>
       {view === "records" ? (
         <>
+          {pending.length > 0 && (
+            <section className="asset-candidates">
+              <h2>本章资产候选 · {pending.length} 项待审核</h2>
+              <p className="muted small">
+                模型建议等级仅针对本章；确认前可编辑或删除，不自动覆盖同名档案。
+              </p>
+              <div className="asset-grid">
+                {pending
+                  .sort(
+                    (a, b) =>
+                      (sort === "等级"
+                        ? levels.indexOf(a.priority) -
+                          levels.indexOf(b.priority)
+                        : 0) || a.first_paragraph - b.first_paragraph,
+                  )
+                  .map((a) => (
+                    <ImageCard
+                      key={a.id}
+                      title={a.name}
+                      subtitle={a.description}
+                      badge={a.priority + " · 待审核"}
+                      onOpen={() => setAssetEdit({ ...a, _candidate: true })}
+                    >
+                      <p>
+                        {a.kind} · 首现段落 {a.first_paragraph}
+                      </p>
+                      <p className="small muted">{a.priority_reason}</p>
+                      {s.assets.some(
+                        (v) => v.name === a.name && v.kind === a.kind,
+                      ) && (
+                        <p className="notice">
+                          请对比已有主卡和副卡；状态发生变化时可在已有档案中建立副卡，候选确认不会覆盖旧设定。
+                        </p>
+                      )}
+                      {s.assets.some(
+                        (v) => v.name === a.name && v.kind === a.kind,
+                      ) && (
+                        <p className="notice small">
+                          匹配已有档案。确认仅补充出现位置和本章等级，新增描述与属性保留为建议，不覆盖已有设定。
+                        </p>
+                      )}
+                      {s.assets.some(
+                        (v) => v.name === a.name && v.kind === a.kind,
+                      ) && (
+                        <div className="notice">
+                          <p>
+                            当前状态：
+                            {
+                              s.assets.find(
+                                (v) => v.name === a.name && v.kind === a.kind,
+                              )?.effective?.description
+                            }
+                          </p>
+                          <p>本章建议：{a.description}</p>
+                          <button
+                            disabled={s.busy}
+                            onClick={async () => {
+                              const base = s.assets.find(
+                                (v) => v.name === a.name && v.kind === a.kind,
+                              );
+                              const title =
+                                window.prompt(
+                                  "为此状态副卡命名，例如：伤愈状态",
+                                );
+                              if (!title) return;
+                              if (
+                                await run("save_variant", {
+                                  id: base.id,
+                                  title,
+                                  data: a,
+                                })
+                              )
+                                await run("asset_candidate", {
+                                  id: a.id,
+                                  action: "approve",
+                                });
+                            }}
+                          >
+                            建立状态副卡并关联本章
+                          </button>
+                        </div>
+                      )}
+                      <footer>
+                        <button
+                          onClick={() =>
+                            setAssetEdit({ ...a, _candidate: true })
+                          }
+                        >
+                          编辑候选
+                        </button>
+                        <button
+                          disabled={s.busy}
+                          onClick={() =>
+                            run("asset_candidate", {
+                              id: a.id,
+                              action: "approve",
+                            })
+                          }
+                        >
+                          {s.assets.some(
+                            (v) => v.name === a.name && v.kind === a.kind,
+                          )
+                            ? "关联已有档案"
+                            : "确认入库"}
+                        </button>
+                        <button
+                          disabled={s.busy}
+                          onClick={() =>
+                            run("asset_candidate", {
+                              id: a.id,
+                              action: "delete",
+                            })
+                          }
+                        >
+                          删除候选
+                        </button>
+                      </footer>
+                    </ImageCard>
+                  ))}
+              </div>
+            </section>
+          )}
+          {(s.asset_candidates || []).some((a) => a.accepted) && (
+            <details>
+              <summary>本章已处理候选（保留原始建议）</summary>
+              {s.asset_candidates
+                .filter((a) => a.accepted)
+                .map((a) => (
+                  <section key={a.id}>
+                    <h3>{a.name}</h3>
+                    <pre>
+                      {JSON.stringify(
+                        {
+                          description: a.description,
+                          attributes: a.attributes,
+                          states: a.states,
+                        },
+                        null,
+                        2,
+                      )}
+                    </pre>
+                    <button
+                      onClick={() => {
+                        const asset = s.assets.find((v) => v.id === a.accepted);
+                        if (asset) setAssetEdit(asset);
+                        else notify("档案已归档，可在回收站恢复");
+                      }}
+                    >
+                      编辑对应档案
+                    </button>
+                  </section>
+                ))}
+            </details>
+          )}
+          <h2 className="section-heading">资产档案</h2>
           <div className="asset-grid">
             {rows.map((a) => (
               <ImageCard
@@ -121,7 +364,14 @@ export default function AssetsPage() {
                 onOpen={() => setAssetEdit(a)}
               >
                 <div className="card-meta">
-                  <span className="badge">{a.kind}</span>
+                  <span className="badge">
+                    {a.kind} · {level(a)}
+                  </span>
+                  <span className="small muted">
+                    {Number.isFinite(order(a))
+                      ? "首现段落 " + order(a)
+                      : "出现位置待核对"}
+                  </span>
                   <span
                     className={
                       "badge " + (a.review === "已确认" ? "ok" : "warning")
@@ -130,8 +380,45 @@ export default function AssetsPage() {
                     {a.review}
                   </span>
                 </div>
+                <label>
+                  本章采用
+                  <select
+                    aria-label={"副卡选择 " + a.name}
+                    value={s.chapter_variant_choices?.[a.id] || "auto"}
+                    onChange={(e) =>
+                      run("select_variant", {
+                        id: a.id,
+                        variant: e.target.value,
+                      })
+                    }
+                  >
+                    <option value="auto">自动继承此前最新确认副卡</option>
+                    <option value="base">主卡</option>
+                    {(a.variants || []).map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {v.title}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p className="small muted">
+                  当前有效：{a.effective?.selected_variant?.title || "主卡"}
+                </p>
                 <footer>
                   <span>关联 {new Set(a.uses).size} 个情节</span>
+                  <button
+                    disabled={s.busy}
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          "删除资产档案到回收站？原文、图片与历史保留，相关情节将显示缺失。",
+                        )
+                      )
+                        run("archive_asset", { id: a.id });
+                    }}
+                  >
+                    删除
+                  </button>
                   <button className="quiet" onClick={() => setAssetEdit(a)}>
                     编辑档案 ↗
                   </button>
@@ -142,7 +429,7 @@ export default function AssetsPage() {
           {!rows.length && (
             <Empty
               title="这里还没有视觉资产"
-              text="可手工新建，也可对已确认情节发起资产解析。模型输出需审核后入库。"
+              text="可手工新建，或直接从当前章节构建候选；不需要先解析情节。"
             />
           )}
           <p className="footnote">
@@ -265,14 +552,65 @@ export default function AssetsPage() {
           </div>
         </>
       )}
+      {view === "trash" && (
+        <section>
+          <h2>已删除资产与候选</h2>
+          {(s.asset_trash || []).map((a) => (
+            <p key={a.id}>
+              {a.name}
+              <button
+                onClick={() =>
+                  run("archive_asset", { id: a.id, restore: true })
+                }
+              >
+                恢复资产
+              </button>
+            </p>
+          ))}
+          {(s.asset_candidates || [])
+            .filter((a) => a.deleted && !a.accepted)
+            .map((a) => (
+              <p key={a.id}>
+                {a.name}
+                <button
+                  onClick={() =>
+                    run("asset_candidate", { id: a.id, action: "restore" })
+                  }
+                >
+                  恢复候选
+                </button>
+              </p>
+            ))}
+        </section>
+      )}
     </>
   );
 }
 
 export function AssetEditor({ asset, onClose }) {
-  const { s, run, notify, uploadFiles, setLarge, openAI, dirty } =
-    useWorkspace();
-  const [form, setForm] = useState(copy(asset)),
+  const {
+    s,
+    run,
+    notify,
+    uploadFiles,
+    setLarge,
+    openAI,
+    openCompletion,
+    dirty,
+  } = useWorkspace();
+  const [form, setForm] = useState(
+      copy({
+        ...asset,
+        priority:
+          asset.chapter_levels?.[s.segment]?.priority ||
+          (asset.chapter_levels ? "建议" : asset.priority) ||
+          "建议",
+        priority_reason:
+          asset.chapter_levels?.[s.segment]?.reason ||
+          asset.priority_reason ||
+          "",
+      }),
+    ),
     [refs, setRefs] = useState([]),
     [advanced, setAdvanced] = useState(false),
     [structure, setStructure] = useState(
@@ -281,15 +619,18 @@ export function AssetEditor({ asset, onClose }) {
           attributes: asset.attributes || [],
           states: asset.states || [],
           evidence: asset.evidence || [],
+          appearances: asset.appearances || [],
           missing: asset.missing || [],
         },
         null,
         2,
       ),
     );
+  const latest = useRef(null);
+  latest.current = { form, structure };
   const live = s.assets.find((a) => a.id === asset.id) || asset;
   useEffect(() => {
-    if (asset.id)
+    if (asset.id && !asset._candidate)
       api("gallery")
         .then((rows) => setRefs(rows.filter((r) => r.asset === asset.id)))
         .catch((e) => notify(e.message));
@@ -302,7 +643,13 @@ export function AssetEditor({ asset, onClose }) {
     let parsed;
     try {
       parsed = JSON.parse(structure);
-      for (const key of ["attributes", "states", "evidence", "missing"])
+      for (const key of [
+        "attributes",
+        "states",
+        "evidence",
+        "missing",
+        "appearances",
+      ])
         if (!Array.isArray(parsed[key])) throw new Error();
     } catch {
       notify(
@@ -310,7 +657,13 @@ export function AssetEditor({ asset, onClose }) {
       );
       return;
     }
-    const r = await run("save_asset", { ...form, ...parsed });
+    const r = asset._candidate
+      ? await run("asset_candidate", {
+          id: asset.id,
+          action: "edit",
+          data: { ...form, ...parsed },
+        })
+      : await run("save_asset", { ...form, ...parsed });
     if (r) {
       dirty.current = false;
       notify("资产已保存；关联方案会标记待复核");
@@ -369,15 +722,131 @@ export function AssetEditor({ asset, onClose }) {
         <label>
           审核
           <select
+            disabled={!!asset._candidate}
             value={form.review}
             onChange={(e) => set("review", e.target.value)}
           >
+            {asset._candidate && <option>待审核</option>}
             <option>待确认</option>
             <option>已确认</option>
             <option>已锁定</option>
           </select>
         </label>
       </div>
+      <div className="field-pair">
+        <label>
+          本章建议等级
+          <select
+            aria-label="资产等级"
+            value={
+              form.priority ||
+              form.chapter_levels?.[s.segment]?.priority ||
+              "建议"
+            }
+            onChange={(e) => set("priority", e.target.value)}
+          >
+            {["核心", "重要", "建议", "可选择"].map((v) => (
+              <option key={v}>{v}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          等级理由
+          <input
+            value={form.priority_reason || ""}
+            onChange={(e) => set("priority_reason", e.target.value)}
+          />
+        </label>
+      </div>
+      <button
+        disabled={s.busy}
+        onClick={() => {
+          let structured;
+          try {
+            structured = JSON.parse(structure);
+          } catch {
+            return notify("先修正结构化属性 JSON");
+          }
+          const snapshot = { ...form, ...structured, type: "asset" };
+          openCompletion(snapshot, ["description"], (changes, original) => {
+            const current = latest.current;
+            let parsed;
+            try {
+              parsed = JSON.parse(current.structure);
+            } catch {
+              return false;
+            }
+            if (
+              changes.some(
+                (c) =>
+                  JSON.stringify({ ...current.form, ...parsed }[c.field]) !==
+                  JSON.stringify(original[c.field]),
+              )
+            ) {
+              notify("目标字段已变化，请重新补全，避免覆盖新编辑。");
+              return false;
+            }
+            const patch = {},
+              annotations = [...(current.form.completion_annotations || [])];
+            for (const c of changes) {
+              if (["attributes", "states", "missing"].includes(c.field))
+                parsed[c.field] = c.value;
+              else patch[c.field] = c.value;
+              annotations.push({
+                field: c.field,
+                source: "AI建议",
+                previous_source: current.form.source,
+                reason: c.reason,
+                time: new Date().toISOString(),
+              });
+            }
+            setForm((f) => ({
+              ...f,
+              ...patch,
+              source: changes.some((c) => c.field === "description")
+                ? "用户自定"
+                : f.source,
+              completion_annotations: annotations,
+            }));
+            setStructure(JSON.stringify(parsed, null, 2));
+            dirty.current = true;
+          });
+        }}
+      >
+        AI补全
+      </button>
+      {asset._candidate && (
+        <label>
+          首次出现段落
+          <input
+            type="number"
+            min="1"
+            max={s.paragraphs.length}
+            value={form.first_paragraph || 1}
+            onChange={(e) => set("first_paragraph", Number(e.target.value))}
+          />
+        </label>
+      )}
+      {s.jobs
+        .filter(
+          (j) =>
+            j.mode === "task" &&
+            j.node === 5 &&
+            j.asset === asset.id &&
+            j.status === "success",
+        )
+        .slice(0, 1)
+        .map((j) => (
+          <details key={j.id}>
+            <summary>资产设定图方案 · 待人工采用</summary>
+            <pre>{j.output}</pre>
+          </details>
+        ))}
+      {form.completion_annotations?.length > 0 && (
+        <p className="notice">
+          含用户采纳的 AI 建议；不代表原文明确。请核对后保存。
+        </p>
+      )}
       <label>
         视觉设定
         <textarea
@@ -402,7 +871,7 @@ export function AssetEditor({ asset, onClose }) {
         <h3>参考图与版本</h3>
         <span className="small muted">{refs.length} 张 · 无自动到期删除</span>
       </div>
-      {asset.id ? (
+      {asset.id && !asset._candidate ? (
         <>
           <DropZone
             compact
@@ -454,7 +923,18 @@ export function AssetEditor({ asset, onClose }) {
             ))}
           </div>
           <div className="actions">
-            <button onClick={() => openAI(5, asset.id)}>讨论此资产</button>
+            <button
+              disabled={s.busy}
+              onClick={() =>
+                run("send", {
+                  node: 5,
+                  asset: asset.id,
+                  message: "依据此资产生成参考图方案，仅输出单轮建议。",
+                })
+              }
+            >
+              生成设定图方案
+            </button>
             <button
               disabled={s.busy}
               onClick={async () => {
@@ -500,6 +980,101 @@ export function AssetEditor({ asset, onClose }) {
       <p className="muted small">
         稳定设定在此编辑。服装变化、伤势、天气等情节状态在“场景插图”的关联卡中单独设置。
       </p>
+      {asset.id && !asset._candidate && (
+        <section className="variant-editor">
+          <h3>状态副卡</h3>
+          <p>
+            将当前编辑内容保存为副卡；主卡保持原设定。可留空参考图，按文字参与生图。
+          </p>
+          <button
+            disabled={s.busy}
+            onClick={async () => {
+              const title = window.prompt("副卡名称，例如：伤愈状态");
+              if (!title) return;
+              let data;
+              try {
+                data = { ...form, ...JSON.parse(structure) };
+              } catch {
+                return notify("请先修正结构化字段");
+              }
+              if (await run("save_variant", { id: asset.id, title, data })) {
+                dirty.current = false;
+                notify("副卡已建立并用于本章；之后章节可自动继承");
+                onClose();
+              }
+            }}
+          >
+            将当前编辑保存为新副卡
+          </button>
+          {(live.variants || []).map((v) => (
+            <div key={v.id}>
+              <strong>{v.title}</strong>
+              <button
+                onClick={() => {
+                  setForm((f) => ({ ...f, ...v.data }));
+                  setStructure(
+                    JSON.stringify(
+                      {
+                        attributes: v.data.attributes || [],
+                        states: v.data.states || [],
+                        evidence: form.evidence || [],
+                        appearances: form.appearances || [],
+                        missing: v.data.missing || [],
+                      },
+                      null,
+                      2,
+                    ),
+                  );
+                  dirty.current = true;
+                }}
+              >
+                载入副卡到编辑器
+              </button>
+              <button
+                onClick={async () => {
+                  let data;
+                  try {
+                    data = { ...form, ...JSON.parse(structure) };
+                  } catch {
+                    return;
+                  }
+                  if (
+                    window.confirm("用当前编辑更新此副卡？历史任务快照保留。")
+                  )
+                    await run("save_variant", {
+                      id: asset.id,
+                      variant_id: v.id,
+                      title: v.title,
+                      data,
+                      image: v.image || "",
+                    });
+                }}
+              >
+                更新此副卡
+              </button>
+              <select
+                value={v.image || ""}
+                onChange={(e) =>
+                  run("save_variant", {
+                    id: asset.id,
+                    variant_id: v.id,
+                    title: v.title,
+                    data: v.data,
+                    image: e.target.value,
+                  })
+                }
+              >
+                <option value="">仅文字，不沿用旧状态图片</option>
+                {(live.images || []).map((im) => (
+                  <option key={im.path} value={im.path}>
+                    {im.path.split("/").at(-1)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ))}
+        </section>
+      )}
       <button className="primary full separated" onClick={save}>
         保存资产修改
       </button>

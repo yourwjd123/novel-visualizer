@@ -1,271 +1,131 @@
 import React, {
-  useState,
   useEffect,
+  useState,
   useRef,
   useImperativeHandle,
   forwardRef,
 } from "react";
-import { X, Send, Download, Paperclip, Square } from "lucide-react";
-import { api, upload } from "./api";
+import { X, Send, Download, Square } from "lucide-react";
+import { api } from "./api";
 import { useWorkspace } from "./context";
-import { DropZone } from "./App";
 
 export default forwardRef(function Assistant({ ai, onChange }, ref) {
-  const { s, run, notify, setModal } = useWorkspace();
-  const [record, setRecord] = useState(null),
-    [message, setMessage] = useState(""),
-    [final, setFinal] = useState(""),
-    [params, setParams] = useState(null),
-    [context, setContext] = useState(""),
-    [tab, setTab] = useState("chat"),
-    [attachments, setAttachments] = useState([]),
-    [candidateSelection, setCandidateSelection] = useState(new Set()),
+  const { s, run, notify, setModal, navigate, setAssetEdit } = useWorkspace();
+  const [tab, setTab] = useState("status"),
+    [question, setQuestion] = useState(""),
+    [reference, setReference] = useState(""),
+    [record, setRecord] = useState(null),
+    [repair, setRepair] = useState(""),
     [position, setPosition] = useState(null),
-    [clock, setClock] = useState(Date.now());
-  const current = useRef(null),
-    values = useRef({ message: "", final: "" }),
-    timer = useRef(null),
+    [clock, setClock] = useState(Date.now()),
+    [chosen, setChosen] = useState(new Set()),
+    [fields, setFields] = useState(["description"]),
+    [drafts, setDrafts] = useState({});
+  const panel = useRef(null),
     drag = useRef(null),
-    panel = useRef(null),
-    geometryTimer = useRef(null),
-    loadSequence = useRef(0),
-    desiredTarget = useRef(null);
-  values.current = { message, final };
-  async function flush() {
-    clearTimeout(timer.current);
-    const target = current.current;
-    const snapshot = { ...values.current };
-    const draftKey = target
-      ? "novelviz-draft:" +
-        s.account.id +
-        ":" +
-        target._project +
-        ":" +
-        target.node +
-        ":" +
-        target.scope
-      : null;
-    if (draftKey) {
-      try {
-        sessionStorage.setItem(draftKey, JSON.stringify(snapshot));
-      } catch {}
-    }
-    if (target)
-      try {
-        await api("save_chat", {
-          ...target,
-          draft: snapshot.message,
-          final: snapshot.final,
-        });
-        if (
-          draftKey &&
-          values.current.message === snapshot.message &&
-          values.current.final === snapshot.final
-        )
-          sessionStorage.removeItem(draftKey);
-      } catch (e) {
-        notify("草稿暂存于当前窗口；本地保存失败：" + e.message);
-      }
-  }
-  useImperativeHandle(ref, () => ({ flush }));
-  const scope = ai.asset
-    ? "asset_" + ai.asset
-    : ai.node === 0 || ai.node === 7
-      ? s.segment
-      : s.scene;
-  const targetKey = [s.project?.id, ai.node, scope].join(":");
-  desiredTarget.current = targetKey;
-  async function load(preserve = false) {
-    if (!s.project || !scope) return;
-    const sequence = ++loadSequence.current;
-    try {
-      const target = {
-        node: ai.node,
-        asset: ai.asset,
-        scope,
-        _project: s.project.id,
-      };
-      const value = await api("node_read", target);
-      if (
-        sequence !== loadSequence.current ||
-        desiredTarget.current !== targetKey
-      )
-        return;
-      if (
-        !preserve ||
-        !current.current ||
-        current.current.scope !== scope ||
-        current.current.node !== ai.node ||
-        current.current._project !== s.project.id
-      ) {
-        current.current = target;
-        let fallback = null;
-        try {
-          fallback = JSON.parse(
-            sessionStorage.getItem(
-              "novelviz-draft:" +
-                s.account.id +
-                ":" +
-                target._project +
-                ":" +
-                target.node +
-                ":" +
-                target.scope,
-            ),
-          );
-        } catch {}
-        setMessage(fallback?.message ?? value.record.draft ?? "");
-        setFinal(fallback?.final ?? value.record.final ?? "");
-        setAttachments(ai.reference ? [ai.reference] : []);
-        setTab("chat");
-      }
-      setRecord(value.record);
-      setParams(value.parameters);
-      setContext(value.context);
-    } catch (e) {
-      notify(e.message);
-    }
-  }
+    sequence = useRef(0),
+    current = useRef(null),
+    geometryTimer = useRef(null);
+  useImperativeHandle(ref, () => ({ flush: async () => {} }));
+  const job = s.jobs.find((j) =>
+    ai.job
+      ? j.id === ai.job
+      : j.segment === s.segment &&
+        (tab === "consult"
+          ? j.mode === "consult"
+          : tab === "complete"
+            ? j.mode === "complete"
+            : true),
+  );
+  const scope = "consult_" + s.segment;
+  const consultationKey = [s.account.id, s.project?.id, s.segment].join(":");
   useEffect(() => {
-    if (ai.open) {
-      load();
-    }
-    return () => clearTimeout(timer.current);
-  }, [targetKey, ai.open]);
+    if (ai.open) setTab(ai.panel || "status");
+  }, [ai.open, ai.panel]);
   useEffect(() => {
-    if (!s.busy) return;
-    const timer = setInterval(() => setClock(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [s.busy]);
-  const lastJob = s.jobs.find((j) => j.node === ai.node && j.scope === scope);
+    setQuestion(drafts[consultationKey] || "");
+    setReference("");
+    current.current = consultationKey;
+  }, [consultationKey]);
   useEffect(() => {
-    if (ai.open && lastJob && !s.busy) load(true);
-  }, [lastJob?.id, lastJob?.status]);
+    if (current.current === consultationKey)
+      setDrafts((d) => ({ ...d, [consultationKey]: question }));
+  }, [question]);
   useEffect(() => {
-    if (ai.open && scope) load(true);
+    if (!ai.open || !s.segment || tab !== "consult") return;
+    const n = ++sequence.current;
+    api("assistant_read", { node: 7, scope })
+      .then((value) => {
+        if (n === sequence.current) setRecord(value);
+      })
+      .catch((e) => notify(e.message));
   }, [
-    JSON.stringify(s.defaults?.[String(ai.node)]),
-    JSON.stringify(s.connections),
+    ai.open,
+    tab,
+    scope,
+    s.project?.id,
+    JSON.stringify(s.jobs.map((j) => [j.id, j.status])),
   ]);
   useEffect(() => {
-    if (!current.current) return;
-    clearTimeout(timer.current);
-    timer.current = setTimeout(flush, 650);
-    return () => clearTimeout(timer.current);
-  }, [message, final]);
-  let candidates = [];
-  if (ai.node === 1)
-    try {
-      let body = final.trim();
-      if (body.startsWith("```"))
-        body = body.split("\n").slice(1, -1).join("\n");
-      candidates = JSON.parse(body).assets || [];
-    } catch {}
+    setRepair(job?.output || "");
+    setChosen(new Set((job?.changes || []).map((_, i) => i)));
+  }, [job?.id, job?.output, JSON.stringify(job?.changes)]);
   useEffect(() => {
-    setCandidateSelection(new Set(candidates.map((_, i) => i)));
-  }, [final]);
-  async function addFiles(files) {
-    try {
-      const next = [];
-      for (const file of files) {
-        const r = await upload(file, "attachment");
-        next.push(r.path);
-      }
-      setAttachments((a) => [...a, ...next]);
-      notify("附件已加入，发送时将按设置确认实际大小");
-    } catch (e) {
-      notify(e.message);
-    }
-  }
-  async function send() {
-    await flush();
-    const result = await run("send", {
-      node: ai.node,
-      asset: ai.asset,
-      message,
-      attachments,
-    });
-    if (result && !result.cancelled) {
-      setMessage("");
-      setAttachments([]);
-      load(true);
-    }
-  }
-  async function apply() {
-    await flush();
-    const result = await run("apply_output", {
-      node: ai.node,
-      asset: ai.asset,
-      text: final,
-      ...(ai.node === 1 ? { selected: [...candidateSelection] } : {}),
-    });
-    if (result) {
-      notify(
-        ai.node === 0
-          ? "已载入待确认拆分，请到原文页核对"
-          : ai.node === 1
-            ? "选定候选已入库为待审核资产；同名档案未覆盖"
-            : "最终方案已确认",
-      );
-    }
-  }
-  const object = ai.asset
-    ? s.assets.find((a) => a.id === ai.asset)?.name
-    : s.scenes.find((r) => r.id === s.scene)?.title ||
-      s.segments.find((seg) => seg.id === s.segment)?.name ||
-      "未选择原文";
-  const geometry = s.settings.workspace_layout?.assistant;
-  function bounded(value = {}) {
-    const width = Math.max(
-      260,
-      Math.min(value.width || 400, window.innerWidth - 20),
+    setFields(
+      ai.fields?.length
+        ? ai.fields
+        : ai.target?.type === "prompt"
+          ? ["text"]
+          : ["description"],
     );
-    const height = Math.max(
-      240,
-      Math.min(value.height || 650, window.innerHeight - 50),
-    );
+  }, [ai.target]);
+  useEffect(() => {
+    if (!s.busy) return;
+    const t = setInterval(() => setClock(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [s.busy]);
+  function bound(r = {}) {
+    const width = Math.min(r.width || 440, innerWidth - 20),
+      height = Math.min(r.height || 700, innerHeight - 55);
     return {
       width,
       height,
       x: Math.max(
         10,
-        Math.min(
-          value.x ?? window.innerWidth - width - 30,
-          window.innerWidth - width - 10,
-        ),
+        Math.min(r.x ?? innerWidth - width - 25, innerWidth - width - 10),
       ),
-      y: Math.max(
-        40,
-        Math.min(value.y ?? 80, window.innerHeight - height - 10),
-      ),
+      y: Math.max(40, Math.min(r.y ?? 70, innerHeight - height - 10)),
     };
   }
-  const rect = bounded(position || geometry || {});
-  const style = {
-    left: rect.x,
-    top: rect.y,
-    right: "auto",
-    width: rect.width,
-    height: rect.height,
-  };
+  const rect = bound(position || s.settings.workspace_layout?.assistant || {});
+  async function geometry() {
+    if (!panel.current || panel.current.hidden) return;
+    const r = panel.current.getBoundingClientRect();
+    await api("settings", {
+      workspace_layout: {
+        ...s.settings.workspace_layout,
+        assistant: { x: r.x, y: r.y, width: r.width, height: r.height },
+      },
+    }).catch(() => {});
+  }
   function close() {
+    geometry();
     onChange({ ...ai, open: false });
-    flush();
-    storeGeometry();
   }
   useEffect(() => {
     const key = (e) => {
-      if (e.key === "Escape" && ai.open) {
+      if (ai.open && e.key === "Escape") {
         e.preventDefault();
         close();
       }
     };
     const resize = () => {
-      const r = panel.current?.getBoundingClientRect();
-      if (r)
+      if (panel.current && !panel.current.hidden) {
+        const r = panel.current.getBoundingClientRect();
         setPosition(
-          bounded({ x: r.x, y: r.y, width: r.width, height: r.height }),
+          bound({ x: r.x, y: r.y, width: r.width, height: r.height }),
         );
+      }
     };
     window.addEventListener("keydown", key);
     window.addEventListener("resize", resize);
@@ -276,14 +136,9 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
   }, [ai.open]);
   useEffect(() => {
     if (!panel.current) return;
-    let first = true;
     const observer = new ResizeObserver(() => {
-      if (first) {
-        first = false;
-        return;
-      }
       clearTimeout(geometryTimer.current);
-      geometryTimer.current = setTimeout(storeGeometry, 400);
+      geometryTimer.current = setTimeout(geometry, 400);
     });
     observer.observe(panel.current);
     return () => {
@@ -291,36 +146,73 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
       clearTimeout(geometryTimer.current);
     };
   }, []);
-  async function storeGeometry() {
-    if (!panel.current || panel.current.hidden) return;
-    const r = panel.current.getBoundingClientRect();
-    await api("settings", {
-      workspace_layout: {
-        ...s.settings.workspace_layout,
-        assistant: { x: r.x, y: r.y, width: r.width, height: r.height },
-      },
-    }).catch(() => {});
+  async function send(mode) {
+    const d =
+      mode === "consult"
+        ? { node: 7, mode, message: question, reference }
+        : {
+            node: ai.target?.type === "prompt" ? 3 : 5,
+            mode,
+            target: ai.target,
+            fields,
+            message: question || "请补全所选字段，保留其余内容。",
+          };
+    const result = await run("send", d);
+    if (result && !result.cancelled) {
+      setQuestion("");
+      setReference("");
+    }
   }
+  const summary = s.chapter_summary || {};
+  const status =
+    job?.status === "running"
+      ? "运行中 · " + (job.phase || "等待模型响应")
+      : job?.status === "invalid"
+        ? "输出待修正"
+        : job?.status === "success"
+          ? job.mode === "consult"
+            ? "咨询回复已保存"
+            : job.mode === "complete"
+              ? "补全建议待采用"
+              : `任务完成 · ${job.result_count ?? ""}${job.node === 1 ? " 项资产候选待审核" : job.node === 0 ? " 个情节候选待确认" : "结果待确认"}`
+          : job?.status === "failed"
+            ? "任务失败"
+            : job?.status === "unknown"
+              ? "任务状态未知"
+              : job?.status || "尚未运行任务";
+  const preface =
+    s.defaults[
+      String(tab === "consult" ? 7 : ai.target?.type === "prompt" ? 3 : 5)
+    ] || {};
+  const actualPreface = preface.preface_override
+    ? preface.preface || ""
+    : s.settings.language_preface || "";
   return (
     <section
       hidden={!ai.open}
       ref={panel}
       className="assistant"
       aria-label="可拖动缩放的 AI 助手"
-      style={style}
+      style={{
+        left: rect.x,
+        top: rect.y,
+        right: "auto",
+        width: rect.width,
+        height: rect.height,
+      }}
     >
       <header
         className="assistant-heading"
         onPointerDown={(e) => {
-          if (e.target.closest("button,select")) return;
-          const rect = panel.current.getBoundingClientRect();
-          drag.current = { x: e.clientX - rect.x, y: e.clientY - rect.y };
+          if (e.target.closest("button")) return;
+          const r = panel.current.getBoundingClientRect();
+          drag.current = { x: e.clientX - r.x, y: e.clientY - r.y };
           e.currentTarget.setPointerCapture(e.pointerId);
         }}
         onPointerMove={(e) => {
           if (drag.current)
             setPosition(
-              bounded({
+              bound({
                 x: e.clientX - drag.current.x,
                 y: e.clientY - drag.current.y,
                 width: panel.current.offsetWidth,
@@ -328,18 +220,14 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
               }),
             );
         }}
-        onPointerCancel={() => {
-          drag.current = null;
-        }}
-        onLostPointerCapture={() => {
-          drag.current = null;
-        }}
         onPointerUp={() => {
           if (drag.current) {
             drag.current = null;
-            storeGeometry();
+            geometry();
           }
         }}
+        onPointerCancel={() => (drag.current = null)}
+        onLostPointerCapture={() => (drag.current = null)}
       >
         <h2>✧ AI 助手</h2>
         <button
@@ -350,251 +238,326 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
           <X size={17} /> 收起
         </button>
       </header>
-      {lastJob && (
-        <div className="assistant-run-status" role="status">
-          <strong>
-            {lastJob.status === "running"
-              ? "运行中 · " + (lastJob.phase || "等待模型响应")
-              : lastJob.status === "success"
-                ? "任务完成 · 请审核输出"
-                : lastJob.status === "failed"
-                  ? "任务失败"
-                  : lastJob.status}
-          </strong>
-          <small>
-            {lastJob.model || "演示模型"} · {lastJob.created?.slice(11, 19)}{" "}
-            {lastJob.status === "running"
-              ? " · 已等待 " +
-                Math.max(
-                  0,
-                  Math.floor((clock - Date.parse(lastJob.created)) / 1000),
-                ) +
-                " 秒"
-              : ""}
-          </small>
-          {lastJob.error && <p>{lastJob.error}</p>}
-          {lastJob.output_warning && <p>{lastJob.output_warning}</p>}
-          {lastJob.request_summary && (
-            <small>
-              估算输入约 {lastJob.request_summary.estimated_input_tokens}{" "}
-              token（不含附件） · {lastJob.request_summary.history_turns} 条历史
-              · {lastJob.request_summary.attachments} 个附件
-            </small>
-          )}
-          {lastJob.usage && Object.keys(lastJob.usage).length > 0 && (
-            <small>实际用量：{JSON.stringify(lastJob.usage)}</small>
-          )}
-        </div>
-      )}
-      <div className="assistant-context">
-        <strong>{object}</strong>
-        <button
-          className="quiet small"
-          onClick={() => setPosition(bounded({ width: 400, height: 650 }))}
-        >
-          重置位置
-        </button>
-        <select
-          aria-label="当前 AI 任务"
-          value={ai.node}
-          disabled={s.busy}
-          onChange={async (e) => {
-            await flush();
-            onChange({ ...ai, node: Number(e.target.value) });
-          }}
-        >
-          {[0, 1, 5, 2, 3, 4, 6, 7].map((node) => (
-            <option key={node} value={node}>
-              {s.nodes[node]}
-            </option>
-          ))}
-        </select>
-        <span className="small muted">
-          {params?.provider === "demo"
-            ? "演示 · 不联网"
-            : params?.model || "尚未配置模型"}
-        </span>
-      </div>
       <div className="assistant-tabs">
         {[
-          ["chat", "讨论"],
-          ["final", "方案与确认"],
-          ["input", "本次输入"],
+          ["status", "任务状态"],
+          ai.target ? ["complete", "AI 补全"] : ["consult", "自由咨询"],
         ].map(([id, label]) => (
           <button
             key={id}
             className={tab === id ? "active" : ""}
-            onClick={() => setTab(id)}
+            onClick={() => {
+              setTab(id);
+              onChange({ ...ai, panel: id, job: null });
+            }}
           >
             {label}
           </button>
         ))}
       </div>
+      <div className="assistant-run-status" role="status">
+        <strong>{status}</strong>
+        {job && (
+          <>
+            <small>
+              {job.kind} · {job.model || "演示模型"} · {job.created}
+              {job.status === "running"
+                ? " · 已等待 " +
+                  Math.max(
+                    0,
+                    Math.floor((clock - Date.parse(job.created)) / 1000),
+                  ) +
+                  " 秒"
+                : ""}
+            </small>
+            <small>
+              实际输出上限：{job.effective_max_tokens ?? "未记录"} token
+            </small>
+            {job.request_summary && (
+              <small>
+                估算输入约 {job.request_summary.estimated_input_tokens}{" "}
+                token（不含附件） · 本次 {job.request_summary.history_turns}{" "}
+                条用户消息
+              </small>
+            )}
+            {job.usage && <small>实际用量：{JSON.stringify(job.usage)}</small>}
+            {job.error && <p>{job.error}</p>}
+          </>
+        )}
+      </div>
       <div className="assistant-body">
-        {tab === "chat" ? (
-          <div className="messages">
-            {record?.messages.map((m, i) => (
-              <section key={i} className={"message message-" + m.role}>
-                <span className="eyebrow">
-                  {m.role === "assistant" ? "模型" : "用户"} ·{" "}
-                  {m.time?.slice(11, 19)}
-                </span>
-                <p>{m.content}</p>
-                {(m.attachments || []).map((path) => (
+        {tab === "status" ? (
+          <>
+            <p className="muted small">
+              自动任务单轮运行，不附带历史聊天。请在工作区启动任务、查看和确认结果。
+            </p>
+            {job && (
+              <>
+                <p>
+                  {s.segments.find((v) => v.id === job.segment)?.name} /{" "}
+                  {job.scene && s.scenes.find((v) => v.id === job.scene)?.title}
+                </p>
+                {job.status === "success" && (
                   <button
-                    key={path}
-                    className="quiet small"
-                    onClick={() =>
-                      setAttachments((files) =>
-                        files.includes(path)
-                          ? files.filter((p) => p !== path)
-                          : [...files, path],
-                      )
-                    }
-                  >
-                    {attachments.includes(path)
-                      ? "取消本轮引用："
-                      : "本轮引用附件："}
-                    {path.split("/").at(-1)}
-                  </button>
-                ))}
-                {m.role === "assistant" && (
-                  <button
-                    className="quiet small"
-                    onClick={() => {
-                      setFinal(m.content);
-                      setTab("final");
+                    onClick={async () => {
+                      if (job.mode === "consult") {
+                        setTab("consult");
+                        return;
+                      }
+                      if (job.mode === "complete") {
+                        if (ai.target?.request_id === job.target?.request_id)
+                          setTab("complete");
+                        else
+                          notify(
+                            "请从原编辑对象重新打开补全，防止覆盖已变化的内容",
+                          );
+                        return;
+                      }
+                      await navigate(
+                        job.node === 0
+                          ? "source"
+                          : [1, 5].includes(job.node)
+                            ? "assets"
+                            : "images",
+                      );
+                      if (job.node === 5 && job.asset)
+                        setAssetEdit(s.assets.find((a) => a.id === job.asset));
+                      close();
                     }}
                   >
-                    采用到待确认方案 →
+                    查看任务结果
                   </button>
                 )}
-              </section>
-            ))}
-            {!record?.messages.length && (
-              <p className="muted small">
-                每个任务可多轮讨论，也可在“方案与确认”直接手工填写。只有主动发送才会调用模型。
-              </p>
-            )}
-          </div>
-        ) : tab === "final" ? (
-          <>
-            <label>
-              可编辑的最终方案
-              <textarea
-                rows={10}
-                value={final}
-                onChange={(e) => setFinal(e.target.value)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={async (e) => {
-                  e.preventDefault();
-                  for (const f of e.dataTransfer.files) {
-                    if (/\.(txt|md)$/i.test(f.name)) {
-                      const text = await f.text();
-                      setFinal((v) => v + "\n" + text);
-                    } else await addFiles([f]);
-                  }
-                }}
-              />
-            </label>
-            {candidates.length > 0 && (
-              <div className="candidate-approval">
-                <p className="small muted">
-                  选择入库项；同名同类档案只建立关联，不自动覆盖。
-                </p>
-                {candidates.map((c, i) => (
-                  <label className="check-row" key={i}>
-                    <input
-                      type="checkbox"
-                      checked={candidateSelection.has(i)}
-                      onChange={(e) =>
-                        setCandidateSelection((prev) => {
-                          const next = new Set(prev);
-                          e.target.checked ? next.add(i) : next.delete(i);
-                          return next;
-                        })
-                      }
+                {job.validation_error && (
+                  <div className="notice warning">{job.validation_error}</div>
+                )}
+                {job.output_warning && (
+                  <p className="notice warning">{job.output_warning}</p>
+                )}
+                <details>
+                  <summary>本次实际输入与规则</summary>
+                  <h3>前置与任务提示词</h3>
+                  <pre>
+                    {job.system_preview || "输入快照保存在项目任务目录。"}
+                  </pre>
+                  <h3>资料范围</h3>
+                  <pre>{job.context_preview}</pre>
+                </details>
+                {job.output && (
+                  <details open={!!job.validation_error}>
+                    <summary>原始输出 / 手工校验</summary>
+                    <textarea
+                      aria-label="任务原始输出"
+                      rows={9}
+                      value={repair}
+                      onChange={(e) => setRepair(e.target.value)}
                     />
-                    <span>
-                      {c.name} · {c.kind}
-                      <small>{c.source || "AI 建议"}</small>
-                    </span>
-                  </label>
-                ))}
-              </div>
+                    {job.validation_error && (
+                      <button
+                        disabled={s.busy}
+                        onClick={() =>
+                          run("validate_task", { job: job.id, text: repair })
+                        }
+                      >
+                        校验修改后的输出
+                      </button>
+                    )}
+                  </details>
+                )}
+                <button
+                  className="quiet small"
+                  onClick={() =>
+                    setModal({
+                      type: "export",
+                      data: {
+                        node: job.node,
+                        scope: job.scope,
+                        asset: job.asset,
+                      },
+                    })
+                  }
+                >
+                  <Download size={13} />
+                  导出任务文本
+                </button>
+              </>
             )}
-            <button
-              className="primary"
-              disabled={s.busy || !final.trim()}
-              onClick={apply}
-            >
-              {ai.node === 0
-                ? "校验并载入拆分候选"
-                : ai.node === 1
-                  ? "校验选中候选并入库"
-                  : "确认最终方案"}
-            </button>
           </>
         ) : (
           <>
-            <h3>实际任务提示词</h3>
-            <pre>{params?.system}</pre>
-            <h3>原文、情节与关联资产</h3>
-            <pre>{context}</pre>
-            <p className="muted small">
-              默认仅附带必要历史和本轮附件，完整对话保存在本地；关闭精简请求后会附带全部历史。参数按发送时冻结到任务快照。
-            </p>
+            <details>
+              <summary>本轮背景与输入范围</summary>
+              <h3>用户前置提示词</h3>
+              <pre>{actualPreface || "未填写"}</pre>
+              <h3>本章梗概</h3>
+              <pre>{summary.text || "暂无梗概，可在原文页手工填写。"}</pre>
+              {summary.stale && (
+                <p className="notice warning">梗概对应的原文已变化，请更新。</p>
+              )}
+              <p>不附带章节全文或历史聊天；只有明确引用的回答参与本轮。</p>
+              {tab === "complete" && (
+                <>
+                  <h3>目标全文</h3>
+                  <pre>{JSON.stringify(ai.target, null, 2)}</pre>
+                  <h3>补全指导</h3>
+                  <pre>
+                    {preface.completion_guidance ||
+                      s.settings.completion_guidance ||
+                      s.completion_guidance_default ||
+                      "使用内置补全指导，可在设置中修改。"}
+                  </pre>
+                </>
+              )}
+            </details>
+            {tab === "consult" ? (
+              <div className="messages">
+                {record?.messages?.map((m, i) => (
+                  <section key={i} className={"message message-" + m.role}>
+                    <small>
+                      {m.role === "user" ? "用户" : "模型"} · {m.time}
+                    </small>
+                    <p>{m.content}</p>
+                    {m.role === "assistant" && (
+                      <button
+                        className="quiet small"
+                        onClick={() => setReference(m.content)}
+                      >
+                        本轮引用此回答
+                      </button>
+                    )}
+                  </section>
+                ))}
+                <button
+                  className="quiet small"
+                  onClick={() =>
+                    setModal({ type: "export", data: { node: 7, scope } })
+                  }
+                >
+                  导出咨询记录 TXT / MD
+                </button>
+              </div>
+            ) : (
+              <>
+                <h3>补全字段</h3>
+                {(ai.target?.type === "prompt"
+                  ? ["text"]
+                  : ["description", "notes", "attributes", "states", "missing"]
+                ).map((field) => (
+                  <label className="check-row" key={field}>
+                    <input
+                      type="checkbox"
+                      checked={fields.includes(field)}
+                      onChange={(e) =>
+                        setFields((v) =>
+                          e.target.checked
+                            ? [...v, field]
+                            : v.filter((f) => f !== field),
+                        )
+                      }
+                    />
+                    {
+                      {
+                        text: "图像提示词",
+                        description: "描述",
+                        notes: "备注",
+                        attributes: "属性",
+                        states: "状态",
+                        missing: "缺失项",
+                      }[field]
+                    }
+                  </label>
+                ))}
+                {job?.mode === "complete" &&
+                  job.changes?.map((c, i) => (
+                    <section className="completion-change" key={i}>
+                      <label className="check-row">
+                        <input
+                          type="checkbox"
+                          checked={chosen.has(i)}
+                          onChange={(e) =>
+                            setChosen((v) => {
+                              const n = new Set(v);
+                              e.target.checked ? n.add(i) : n.delete(i);
+                              return n;
+                            })
+                          }
+                        />
+                        {c.field} · AI建议
+                      </label>
+                      <small>修改前</small>
+                      <pre>
+                        {JSON.stringify(job.target?.[c.field], null, 2)}
+                      </pre>
+                      <small>建议修改后</small>
+                      <pre>
+                        {typeof c.value === "string"
+                          ? c.value
+                          : JSON.stringify(c.value, null, 2)}
+                      </pre>
+                      <p>{c.reason}</p>
+                    </section>
+                  ))}
+                {job?.mode === "complete" && job.status === "success" && (
+                  <button
+                    disabled={!chosen.size || !ai.onApply}
+                    onClick={() => {
+                      const changes = job.changes.filter((_, i) =>
+                        chosen.has(i),
+                      );
+                      if (
+                        job.segment !== s.segment ||
+                        job.target?.request_id !== ai.target?.request_id
+                      ) {
+                        notify("编辑目标已变化，请重新发起补全");
+                        return;
+                      }
+                      if (ai.onApply?.(changes, job.target) !== false) {
+                        notify("已填入编辑器，仍需手工保存；来源为 AI 建议");
+                        close();
+                      }
+                    }}
+                  >
+                    采用选中建议到编辑器
+                  </button>
+                )}
+                {job?.mode === "complete" && job.validation_error && (
+                  <div className="notice warning">
+                    {job.validation_error}
+                    <button onClick={() => setTab("status")}>
+                      查看原始输出并修正
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
           </>
         )}
       </div>
       <footer className="assistant-compose">
-        <textarea
-          aria-label="本轮对话输入"
-          rows={3}
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          placeholder="继续讨论，或提出本轮调整要求…"
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault();
-            addFiles(Array.from(e.dataTransfer.files));
-          }}
-        />
-        <div className="attached-files">
-          {attachments.map((path) => (
-            <span key={path}>
-              {path.split("/").at(-1)}
-              <button
-                className="quiet icon"
-                aria-label="移除附件"
-                onClick={() =>
-                  setAttachments((files) => files.filter((p) => p !== path))
-                }
-              >
-                ×
-              </button>
-            </span>
-          ))}
-        </div>
+        {tab !== "status" && (
+          <>
+            {reference && (
+              <div className="notice">
+                已明确引用一条回答
+                <button onClick={() => setReference("")}>移除引用</button>
+              </div>
+            )}
+            <textarea
+              aria-label="本轮对话输入"
+              rows={3}
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder={
+                tab === "consult"
+                  ? "咨询当前章节；历史不会自动重发"
+                  : "说明需要补全的空缺或简略部分…"
+              }
+            />
+          </>
+        )}
         <div className="actions">
-          <DropZone
-            compact
-            onFiles={addFiles}
-            accept=".txt,.md,.docx,.epub,.png,.jpg,.jpeg,.webp"
-            label="附件"
-          />
-          <button
-            className="quiet small"
-            onClick={async () => {
-              await flush();
-              setModal({
-                type: "export",
-                data: { node: ai.node, asset: ai.asset, scope },
-              });
-            }}
-          >
-            <Download size={13} />
-            TXT / MD
+          <button className="quiet small" onClick={() => setPosition(bound())}>
+            重置位置
           </button>
           <span className="spacer" />
           {s.busy ? (
@@ -603,14 +566,19 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
               停止等待
             </button>
           ) : (
-            <button
-              className="primary"
-              disabled={!message.trim()}
-              onClick={send}
-            >
-              <Send size={13} />
-              发送
-            </button>
+            tab !== "status" && (
+              <button
+                className="primary"
+                disabled={
+                  summary.stale ||
+                  (tab === "consult" ? !question.trim() : !fields.length)
+                }
+                onClick={() => send(tab === "consult" ? "consult" : "complete")}
+              >
+                <Send size={13} />
+                {tab === "consult" ? "发送" : "生成补全建议"}
+              </button>
+            )
           )}
         </div>
       </footer>

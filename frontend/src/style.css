@@ -1725,3 +1725,93 @@ pre {
 .assistant {
   z-index: 15;
 }
+
+.chapter-summary,
+.task-result {
+  padding: 14px;
+  margin: 12px 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.chapter-summary textarea {
+  width: 100%;
+  margin: 10px 0;
+}
+.asset-candidates {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 20px;
+}
+.completion-change {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  margin: 10px 0;
+}
+.completion-change pre,
+.task-result pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 360px;
+  overflow: auto;
+}
+.assistant-body details {
+  margin: 10px 0;
+}
+.assistant-compose .notice {
+  max-height: 70px;
+  overflow: auto;
+}
+.asset-editor .notice {
+  font-size: 0.85em;
+}
+
+.asset-tag {
+  font-size: 0.8em;
+  padding: 3px 6px;
+}
+
+.chapter-stack {
+  max-height: 170px;
+  overflow: auto;
+  padding: 8px 14px 15px;
+  overscroll-behavior: contain;
+}
+.chapter-tab {
+  position: relative;
+  display: flex;
+  margin-top: -8px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 -2px 5px #0001;
+  min-height: 34px;
+}
+.chapter-tab:first-child {
+  margin-top: 0;
+}
+.chapter-tab:hover {
+  z-index: 3;
+  background: var(--soft);
+  transform: translateX(3px);
+}
+.chapter-tab.active {
+  z-index: 4;
+  transform: translateX(7px);
+  border-color: var(--accent);
+}
+.chapter-tab button:first-child {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.variant-editor {
+  padding: 12px;
+  border: 1px solid var(--line);
+  margin-top: 15px;
+}
+.variant-editor select {
+  max-width: 100%;
+}
