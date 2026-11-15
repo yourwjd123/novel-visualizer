@@ -5,9 +5,13 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Beta release tag, e.g. v0.4.0-beta.1'
+        description: 'Beta release tag, e.g. v0.4.1-beta.1'
         required: true
-        default: 'v0.4.0-beta.1'
+        default: 'v0.4.1-beta.1'
+      publish:
+        description: 'Publish beta Release after successful build'
+        type: boolean
+        default: false
 permissions:
   contents: write
 jobs:
@@ -81,6 +85,7 @@ jobs:
             dist/*test.zip
             dist/novel-visualizer-source.zip
       - name: Publish beta assets
+        if: startsWith(github.ref, 'refs/tags/') || inputs.publish
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}

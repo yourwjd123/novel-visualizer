@@ -20,25 +20,51 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
     [tab, setTab] = useState("chat"),
     [attachments, setAttachments] = useState([]),
     [candidateSelection, setCandidateSelection] = useState(new Set()),
-    [position, setPosition] = useState(null);
+    [position, setPosition] = useState(null),
+    [clock, setClock] = useState(Date.now());
   const current = useRef(null),
     values = useRef({ message: "", final: "" }),
     timer = useRef(null),
     drag = useRef(null),
-    panel = useRef(null);
+    panel = useRef(null),
+    geometryTimer = useRef(null),
+    loadSequence = useRef(0),
+    desiredTarget = useRef(null);
   values.current = { message, final };
   async function flush() {
     clearTimeout(timer.current);
     const target = current.current;
+    const snapshot = { ...values.current };
+    const draftKey = target
+      ? "novelviz-draft:" +
+        s.account.id +
+        ":" +
+        target._project +
+        ":" +
+        target.node +
+        ":" +
+        target.scope
+      : null;
+    if (draftKey) {
+      try {
+        sessionStorage.setItem(draftKey, JSON.stringify(snapshot));
+      } catch {}
+    }
     if (target)
       try {
         await api("save_chat", {
           ...target,
-          draft: values.current.message,
-          final: values.current.final,
+          draft: snapshot.message,
+          final: snapshot.final,
         });
+        if (
+          draftKey &&
+          values.current.message === snapshot.message &&
+          values.current.final === snapshot.final
+        )
+          sessionStorage.removeItem(draftKey);
       } catch (e) {
-        notify(e.message);
+        notify("草稿暂存于当前窗口；本地保存失败：" + e.message);
       }
   }
   useImperativeHandle(ref, () => ({ flush }));
@@ -48,8 +74,10 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
       ? s.segment
       : s.scene;
   const targetKey = [s.project?.id, ai.node, scope].join(":");
+  desiredTarget.current = targetKey;
   async function load(preserve = false) {
     if (!s.project || !scope) return;
+    const sequence = ++loadSequence.current;
     try {
       const target = {
         node: ai.node,
@@ -58,10 +86,36 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
         _project: s.project.id,
       };
       const value = await api("node_read", target);
-      if (!preserve) {
+      if (
+        sequence !== loadSequence.current ||
+        desiredTarget.current !== targetKey
+      )
+        return;
+      if (
+        !preserve ||
+        !current.current ||
+        current.current.scope !== scope ||
+        current.current.node !== ai.node ||
+        current.current._project !== s.project.id
+      ) {
         current.current = target;
-        setMessage(value.record.draft || "");
-        setFinal(value.record.final || "");
+        let fallback = null;
+        try {
+          fallback = JSON.parse(
+            sessionStorage.getItem(
+              "novelviz-draft:" +
+                s.account.id +
+                ":" +
+                target._project +
+                ":" +
+                target.node +
+                ":" +
+                target.scope,
+            ),
+          );
+        } catch {}
+        setMessage(fallback?.message ?? value.record.draft ?? "");
+        setFinal(fallback?.final ?? value.record.final ?? "");
         setAttachments(ai.reference ? [ai.reference] : []);
         setTab("chat");
       }
@@ -74,10 +128,15 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
   }
   useEffect(() => {
     if (ai.open) {
-      flush().then(() => load());
+      load();
     }
     return () => clearTimeout(timer.current);
   }, [targetKey, ai.open]);
+  useEffect(() => {
+    if (!s.busy) return;
+    const timer = setInterval(() => setClock(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [s.busy]);
   const lastJob = s.jobs.find((j) => j.node === ai.node && j.scope === scope);
   useEffect(() => {
     if (ai.open && lastJob && !s.busy) load(true);
@@ -156,19 +215,84 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
       s.segments.find((seg) => seg.id === s.segment)?.name ||
       "未选择原文";
   const geometry = s.settings.workspace_layout?.assistant;
-  const style = position
-    ? { left: position.x, top: position.y, right: "auto" }
-    : geometry
-      ? {
-          left: Math.min(geometry.x, Math.max(0, window.innerWidth - 320)),
-          top: Math.min(geometry.y, Math.max(40, window.innerHeight - 300)),
-          right: "auto",
-          width: geometry.width,
-          height: geometry.height,
-        }
-      : {};
-  async function storeGeometry() {
+  function bounded(value = {}) {
+    const width = Math.max(
+      260,
+      Math.min(value.width || 400, window.innerWidth - 20),
+    );
+    const height = Math.max(
+      240,
+      Math.min(value.height || 650, window.innerHeight - 50),
+    );
+    return {
+      width,
+      height,
+      x: Math.max(
+        10,
+        Math.min(
+          value.x ?? window.innerWidth - width - 30,
+          window.innerWidth - width - 10,
+        ),
+      ),
+      y: Math.max(
+        40,
+        Math.min(value.y ?? 80, window.innerHeight - height - 10),
+      ),
+    };
+  }
+  const rect = bounded(position || geometry || {});
+  const style = {
+    left: rect.x,
+    top: rect.y,
+    right: "auto",
+    width: rect.width,
+    height: rect.height,
+  };
+  function close() {
+    onChange({ ...ai, open: false });
+    flush();
+    storeGeometry();
+  }
+  useEffect(() => {
+    const key = (e) => {
+      if (e.key === "Escape" && ai.open) {
+        e.preventDefault();
+        close();
+      }
+    };
+    const resize = () => {
+      const r = panel.current?.getBoundingClientRect();
+      if (r)
+        setPosition(
+          bounded({ x: r.x, y: r.y, width: r.width, height: r.height }),
+        );
+    };
+    window.addEventListener("keydown", key);
+    window.addEventListener("resize", resize);
+    return () => {
+      window.removeEventListener("keydown", key);
+      window.removeEventListener("resize", resize);
+    };
+  }, [ai.open]);
+  useEffect(() => {
     if (!panel.current) return;
+    let first = true;
+    const observer = new ResizeObserver(() => {
+      if (first) {
+        first = false;
+        return;
+      }
+      clearTimeout(geometryTimer.current);
+      geometryTimer.current = setTimeout(storeGeometry, 400);
+    });
+    observer.observe(panel.current);
+    return () => {
+      observer.disconnect();
+      clearTimeout(geometryTimer.current);
+    };
+  }, []);
+  async function storeGeometry() {
+    if (!panel.current || panel.current.hidden) return;
     const r = panel.current.getBoundingClientRect();
     await api("settings", {
       workspace_layout: {
@@ -184,9 +308,6 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
       className="assistant"
       aria-label="可拖动缩放的 AI 助手"
       style={style}
-      onPointerUp={() => {
-        if (!drag.current) storeGeometry();
-      }}
     >
       <header
         className="assistant-heading"
@@ -198,37 +319,81 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
         }}
         onPointerMove={(e) => {
           if (drag.current)
-            setPosition({
-              x: Math.max(
-                0,
-                Math.min(window.innerWidth - 280, e.clientX - drag.current.x),
-              ),
-              y: Math.max(
-                34,
-                Math.min(window.innerHeight - 100, e.clientY - drag.current.y),
-              ),
-            });
+            setPosition(
+              bounded({
+                x: e.clientX - drag.current.x,
+                y: e.clientY - drag.current.y,
+                width: panel.current.offsetWidth,
+                height: panel.current.offsetHeight,
+              }),
+            );
+        }}
+        onPointerCancel={() => {
+          drag.current = null;
+        }}
+        onLostPointerCapture={() => {
+          drag.current = null;
         }}
         onPointerUp={() => {
-          drag.current = null;
-          storeGeometry();
+          if (drag.current) {
+            drag.current = null;
+            storeGeometry();
+          }
         }}
       >
         <h2>✧ AI 助手</h2>
         <button
           className="icon quiet"
           aria-label="收起 AI 助手"
-          onClick={async () => {
-            await flush();
-            await storeGeometry();
-            onChange({ ...ai, open: false });
-          }}
+          onClick={close}
         >
-          <X size={17} />
+          <X size={17} /> 收起
         </button>
       </header>
+      {lastJob && (
+        <div className="assistant-run-status" role="status">
+          <strong>
+            {lastJob.status === "running"
+              ? "运行中 · " + (lastJob.phase || "等待模型响应")
+              : lastJob.status === "success"
+                ? "任务完成 · 请审核输出"
+                : lastJob.status === "failed"
+                  ? "任务失败"
+                  : lastJob.status}
+          </strong>
+          <small>
+            {lastJob.model || "演示模型"} · {lastJob.created?.slice(11, 19)}{" "}
+            {lastJob.status === "running"
+              ? " · 已等待 " +
+                Math.max(
+                  0,
+                  Math.floor((clock - Date.parse(lastJob.created)) / 1000),
+                ) +
+                " 秒"
+              : ""}
+          </small>
+          {lastJob.error && <p>{lastJob.error}</p>}
+          {lastJob.output_warning && <p>{lastJob.output_warning}</p>}
+          {lastJob.request_summary && (
+            <small>
+              估算输入约 {lastJob.request_summary.estimated_input_tokens}{" "}
+              token（不含附件） · {lastJob.request_summary.history_turns} 条历史
+              · {lastJob.request_summary.attachments} 个附件
+            </small>
+          )}
+          {lastJob.usage && Object.keys(lastJob.usage).length > 0 && (
+            <small>实际用量：{JSON.stringify(lastJob.usage)}</small>
+          )}
+        </div>
+      )}
       <div className="assistant-context">
         <strong>{object}</strong>
+        <button
+          className="quiet small"
+          onClick={() => setPosition(bounded({ width: 400, height: 650 }))}
+        >
+          重置位置
+        </button>
         <select
           aria-label="当前 AI 任务"
           value={ai.node}
@@ -269,12 +434,30 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
         {tab === "chat" ? (
           <div className="messages">
             {record?.messages.map((m, i) => (
-              <section key={i} className={"message " + m.role}>
+              <section key={i} className={"message message-" + m.role}>
                 <span className="eyebrow">
                   {m.role === "assistant" ? "模型" : "用户"} ·{" "}
                   {m.time?.slice(11, 19)}
                 </span>
                 <p>{m.content}</p>
+                {(m.attachments || []).map((path) => (
+                  <button
+                    key={path}
+                    className="quiet small"
+                    onClick={() =>
+                      setAttachments((files) =>
+                        files.includes(path)
+                          ? files.filter((p) => p !== path)
+                          : [...files, path],
+                      )
+                    }
+                  >
+                    {attachments.includes(path)
+                      ? "取消本轮引用："
+                      : "本轮引用附件："}
+                    {path.split("/").at(-1)}
+                  </button>
+                ))}
                 {m.role === "assistant" && (
                   <button
                     className="quiet small"
@@ -359,7 +542,7 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
             <h3>原文、情节与关联资产</h3>
             <pre>{context}</pre>
             <p className="muted small">
-              对话历史与附件也会附带；参数按发送时设置冻结到任务快照。
+              默认仅附带必要历史和本轮附件，完整对话保存在本地；关闭精简请求后会附带全部历史。参数按发送时冻结到任务快照。
             </p>
           </>
         )}

@@ -53,6 +53,12 @@ export default function App() {
     return next;
   }
   async function run(op, data = {}, reload = true) {
+    if (["send", "generate"].includes(op))
+      setAI({
+        open: true,
+        node: op === "send" ? data.node : 4,
+        asset: data.asset || null,
+      });
     try {
       if (
         [
@@ -369,7 +375,7 @@ export default function App() {
             </button>
             <div className="sidebar-spacer" />
             <p className="side-label sidebar-note">
-              v0.4.0-beta.1 · 测试版
+              v0.4.1-beta.1 · 测试版
               <br />
               既有文本 → 视觉资产 → 插图
             </p>
@@ -421,7 +427,9 @@ export default function App() {
         <button
           className="ai-launch primary"
           onClick={() =>
-            openAI(page === "source" ? 0 : page === "assets" ? 1 : 2)
+            ai.open
+              ? setAI((v) => ({ ...v, open: false }))
+              : openAI(page === "source" ? 0 : page === "assets" ? 1 : 2)
           }
         >
           ✧ AI 助手{s.busy && <span className="busy-dot" />}

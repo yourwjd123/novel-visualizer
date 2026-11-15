@@ -20,11 +20,19 @@ export function connect() {
 }
 export async function api(op, data = {}) {
   const bridge = await connect();
-  return new Promise((resolve, reject) =>
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(
+      () =>
+        reject(
+          new Error("本地操作响应超时；请检查任务历史，勿重复提交模型任务。"),
+        ),
+      30000,
+    );
     bridge.invoke(
       op,
       JSON.stringify({ ...data, _project: data._project ?? projectId }),
       (result) => {
+        clearTimeout(timeout);
         try {
           const r = JSON.parse(result);
           if (!r.ok) {
@@ -37,8 +45,8 @@ export async function api(op, data = {}) {
           reject(error);
         }
       },
-    ),
-  );
+    );
+  });
 }
 export async function upload(file, target, asset) {
   if (file.size > 25 * 1024 * 1024) throw new Error("单文件限 25 MB");

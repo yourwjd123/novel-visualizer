@@ -401,11 +401,150 @@ def test_running_task_cannot_switch_its_source_context(work):
     work.busy = False
 
 
-def test_reference_generation_does_not_borrow_illustration_connection(work):
+def test_reference_generation_inherits_default_image_connection(work, monkeypatch):
     asset = work.save_asset(dict(name="人物甲", kind="人物", description="用户设定"))
-    work.store.save_image_defaults(work.account, dict(connection_id="image-default"))
+    profile = dict(
+        id="shared-image",
+        name="默认图片",
+        kind="image_api",
+        endpoint="http://127.0.0.1:9999/v1",
+        model="image",
+    )
+    work.save_connection(profile)
+    work.store.save_image_defaults(work.account, dict(connection_id="shared-image"))
     bridge = Bridge(work.store.root)
     bridge.workspace = work
-    with pytest.raises(ValueError, match="不会借用"):
-        bridge.dispatch("generate", dict(asset=asset["id"], prompt="参考图"))
-    assert not work.project.jobs()
+    captured = []
+    monkeypatch.setattr(bridge, "start", lambda job, run, text: captured.append(job))
+    bridge.dispatch("generate", dict(asset=asset["id"], prompt="参考图"))
+    assert captured[0]["connection"]["id"] == "shared-image"
+
+
+def test_card_status_delete_undo_preserves_ids_and_associations(work):
+    candidates = rows()
+    work.save_split(candidates)
+    first, second = [r["id"] for r in candidates]
+    work.review_scenes(candidates, [first], "已确认")
+    assert len(work.project.scenes(work.segment)) == 1
+    assert work.scene == first
+    work.project.set_requirements(first, [dict(name="甲", kind="人物")])
+    requirement = work.project.requirements(first)
+    candidates[0]["required_assets"] = requirement
+    work.review_scenes(candidates, [first], "候选")
+    assert work.project.requirements(first) == requirement
+    work.review_scenes(candidates[1:], [], "候选")
+    archived_revision = work.project.scene(first)["revision"]
+    assert work.project.scene(first)["archived"]
+    work.review_scenes(candidates, [first, second], "已确认")
+    assert work.project.scene(first)["revision"] > archived_revision
+    assert {r["id"] for r in work.project.scenes(work.segment)} == {first, second}
+    assert work.project.requirements(first) == requirement
+    assert work.segment not in work.project.config["split_drafts"]
+
+
+def test_partial_confirmation_allows_unassigned_source(work):
+    candidates = rows()[1:]
+    work.save_split(candidates)
+    work.review_scenes(candidates, [candidates[0]["id"]], "已确认")
+    assert work.project.scene(work.scene)["start_paragraph"] == 2
+    assert len(work.project.paragraphs(work.segment)) == 3
+    bad = [dict(candidates[0]), dict(candidates[0], id="duplicate-range")]
+    with pytest.raises(ValueError, match="重叠"):
+        work.review_scenes(bad, [], "候选")
+
+
+def test_language_defaults_and_explicit_override(work):
+    settings = work.store.settings(work.account)
+    settings.update(language_connection_id="node-0", language_max_tokens=10000)
+    work.store.save_settings(work.account, settings)
+    work.store.save_node_default(
+        work.account, 1, dict(connection_override=False, parameter_override=False)
+    )
+    assert work.parameters(1)["connection_id"] == "node-0"
+    assert work.parameters(1)["max_tokens"] == 10000
+    work.store.save_node_default(
+        work.account,
+        1,
+        dict(connection_id="node-1", connection_override=True, max_tokens=2345),
+    )
+    assert work.parameters(1)["connection_id"] == "node-1"
+    assert work.parameters(1)["max_tokens"] == 2345
+    work.store.save_node_default(
+        work.account, 1, dict(connection_id="missing", connection_override=True)
+    )
+    with pytest.raises(ValueError, match="连接"):
+        work.parameters(1)
+
+
+def test_compact_request_keeps_user_instructions_and_full_local_history(work):
+    record = work.project.load_node(work.segment, 0)
+    for i in range(8):
+        record["messages"].extend(
+            [
+                dict(role="user", content=f"修订要求{i}"),
+                dict(role="assistant", content="旧草稿" * 1000),
+            ]
+        )
+    work.project.save_node(work.segment, 0, record)
+    job, _, _, _ = work.prepare_text(0, "本轮要求")
+    assert len(job["messages"]) < 17
+    assert [m["content"] for m in job["messages"] if m["role"] == "user"] == [
+        f"修订要求{i}" for i in range(8)
+    ] + ["本轮要求"]
+    assert len(work.project.load_node(work.segment, 0)["messages"]) == 17
+    assert job["request_summary"]["estimated_input_tokens"] > 0
+
+
+def test_current_scene_context_does_not_repeat_source_or_downstream_outputs(work):
+    work.confirm_split(rows())
+    for n in (2, 3):
+        d = work.project.load_node(work.scene, n)
+        d.update(status="已确认", final=f"下游方案{n}")
+        work.project.save_node(work.scene, n, d)
+    context = work.context(1)
+    assert context.count("甲走进渡口。") == 1
+    assert "下游方案" not in context
+    assert "乙交给她一封信。" not in context
+
+
+def test_actual_usage_and_truncation_are_preserved(monkeypatch):
+    from novelviz.providers import text_call
+
+    monkeypatch.setattr(
+        "novelviz.providers.request_json",
+        lambda *args, **kwargs: dict(
+            choices=[dict(message=dict(content="截断文本"), finish_reason="length")],
+            usage=dict(prompt_tokens=120, completion_tokens=30),
+        ),
+    )
+    meta = {}
+    answer = text_call(
+        dict(
+            provider="openai",
+            system="任务",
+            endpoint="http://localhost:9999/v1",
+            model="test",
+            max_tokens=30,
+            temperature=0.5,
+        ),
+        [dict(role="user", content="拆分")],
+        "",
+        metadata=meta,
+    )
+    assert answer == "截断文本"
+    assert meta["usage"]["prompt_tokens"] == 120
+    assert meta["finish_reason"] == "length"
+    assert "截断" in meta["output_warning"]
+
+
+def test_default_language_reference_remaps_on_settings_import(work, tmp_path):
+    settings = work.store.settings(work.account)
+    settings.update(language_connection_id="node-0", language_temperature=0)
+    work.store.save_settings(work.account, settings)
+    assert work.store.settings(work.account)["language_temperature"] == 0
+    target = tmp_path / "settings.json"
+    work.store.export_settings(work.account, target)
+    work.store.import_settings(work.account, target)
+    imported = work.store.settings(work.account)["language_connection_id"]
+    assert imported.startswith("import-")
+    assert imported in {c["id"] for c in work.store.connections(work.account)}

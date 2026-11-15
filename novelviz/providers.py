@@ -68,7 +68,9 @@ def request_json(url, payload=None, key="", timeout=90):
         ) from None
 
 
-def text_call(params, messages, context, key="", attachments=(), cancel=None):
+def text_call(
+    params, messages, context, key="", attachments=(), cancel=None, metadata=None
+):
     if params["provider"] == "demo":
         fmt = params.get("template", {}).get("format")
         if fmt == "scenes":
@@ -179,7 +181,16 @@ def text_call(params, messages, context, key="", attachments=(), cancel=None):
         key,
     )
     try:
-        answer = result["choices"][0]["message"]["content"]
+        choice = result["choices"][0]
+        if metadata is not None:
+            metadata["usage"] = result.get("usage", {})
+            metadata["finish_reason"] = choice.get("finish_reason")
+        if choice.get("finish_reason") == "length":
+            if metadata is not None:
+                metadata["output_warning"] = (
+                    "输出达到 token 上限，内容可能被截断；请提高上限或缩小任务范围。"
+                )
+        answer = choice["message"]["content"]
         if not isinstance(answer, str):
             raise ValueError()
         return answer

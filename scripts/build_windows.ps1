@@ -1,4 +1,4 @@
-param([string]$Version = "0.4.0-beta.1")
+param([string]$Version = "0.4.1-beta.1")
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot -Parent)
 python -m pip install -r requirements.txt "pyinstaller>=6.16,<7"

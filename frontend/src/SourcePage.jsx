@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Plus, LocateFixed, Undo2, ChevronRight } from "lucide-react";
-import { useWorkspace, copy } from "./context";
+import { useWorkspace, copy, freshId } from "./context";
 import { PageHeading, Empty, DropZone } from "./App";
 import { api } from "./api";
 
@@ -16,10 +16,17 @@ export default function SourcePage() {
     [history, setHistory] = useState([]),
     [showSource, setShowSource] = useState(true),
     [depth, setDepth] = useState(s.depth || "中 · 连续情节");
+  const sourceRef = useRef(null);
   const draft = s.drafts?.[s.segment];
   const signature = JSON.stringify(draft?.rows || s.scenes);
   useEffect(() => {
-    setRows(copy(draft?.rows || s.scenes || []));
+    setRows(
+      copy(draft?.rows || s.scenes || []).map((r) => ({
+        ...r,
+        id: r.id || freshId(),
+        review: r.review || (draft ? "候选" : "已确认"),
+      })),
+    );
     setSelected(0);
     setEdit(null);
     setEditData(null);
@@ -27,31 +34,52 @@ export default function SourcePage() {
     dirty.current = false;
   }, [s.segment]);
   useEffect(() => {
-    if (edit === null) setRows(copy(draft?.rows || s.scenes || []));
+    if (edit === null)
+      setRows(
+        copy(draft?.rows || s.scenes || []).map((r) => ({
+          ...r,
+          id: r.id || freshId(),
+          review: r.review || (draft ? "候选" : "已确认"),
+        })),
+      );
   }, [signature]);
   function validate(list) {
-    let next = 1;
+    let previous = 0;
     for (const r of list) {
       if (!r.title?.trim()) return "每个情节需要标题";
       if (
-        r.start_paragraph !== next ||
+        r.start_paragraph <= previous ||
         r.end_paragraph < r.start_paragraph ||
-        r.end_paragraph > s.paragraphs.length
+        r.end_paragraph > s.paragraphs.length ||
+        r.start_paragraph < 1
       )
-        return "段落存在遗漏、重叠或越界，请调整后再确认";
-      next = r.end_paragraph + 1;
+        return "段落存在重叠或越界，请调整后再确认";
+      previous = r.end_paragraph;
     }
-    return next === s.paragraphs.length + 1 ? "" : "情节尚未覆盖全部原文";
+    return "";
   }
   const error = rows.length ? validate(rows) : "";
   async function save(next, keepUndo = true) {
+    next = next.map((r) => ({
+      ...r,
+      id: r.id || freshId(),
+      review: r.review || "候选",
+    }));
+    if (!(await run("review_scenes", { rows: next, ids: [], status: "候选" })))
+      return false;
     if (keepUndo) setHistory((h) => [...h, copy(rows)]);
     setRows(next);
-    await run("save_split", { rows: next });
     setSplit(null);
     dirty.current = false;
+    return true;
   }
   function startEdit(i) {
+    if (
+      edit !== null &&
+      dirty.current &&
+      !window.confirm("放弃当前未保存编辑并编辑另一张卡片？")
+    )
+      return;
     setEdit(i);
     setEditData(copy(rows[i]));
     setSelected(i);
@@ -79,9 +107,58 @@ export default function SourcePage() {
     if (result && !result.cancelled)
       notify("分析已开始，输出会作为待确认候选，不自动生成资产或图片。");
   }
+  async function review(ids, status) {
+    if (await run("review_scenes", { rows, ids, status }))
+      setRows(
+        rows.map((r) => (ids.includes(r.id) ? { ...r, review: status } : r)),
+      );
+  }
+  function locate(i) {
+    setSelected(i);
+    setShowSource(true);
+    if (s.scenes.some((r) => r.id === rows[i].id))
+      run("select", { scene: rows[i].id });
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const el = document.getElementById(
+            "paragraph-" + rows[i].start_paragraph,
+          ),
+          pane = sourceRef.current;
+        if (el && pane)
+          pane.scrollTo({
+            top:
+              pane.scrollTop +
+              el.getBoundingClientRect().top -
+              pane.getBoundingClientRect().top -
+              12,
+            behavior: "smooth",
+          });
+      }),
+    );
+  }
+  async function extract() {
+    const row = rows[selected];
+    if (!row || row.review !== "已确认") return notify("请先确认选中的情节");
+    if (!(await run("select", { scene: row.id }))) return;
+    openAI(1);
+    await run("send", {
+      node: 1,
+      message:
+        "解析当前情节涉及的人物、场景与道具。对照已有资产，输出有证据的资产候选；已存在的档案仅提出新增信息与冲突，不自动覆盖。",
+    });
+  }
   const current = rows[selected];
+  const covered = new Set(
+    rows.flatMap((r) =>
+      Array.from(
+        { length: Math.max(0, r.end_paragraph - r.start_paragraph + 1) },
+        (_, i) => r.start_paragraph + i,
+      ),
+    ),
+  );
+  const missing = s.paragraphs.filter((p) => !covered.has(p.number));
   const imported = !rows.length;
-  const confirmed = !!s.scenes.length && !draft;
+  const confirmed = rows.length > 0 && rows.every((r) => r.review === "已确认");
   if (!s.segment)
     return (
       <>
@@ -125,22 +202,22 @@ export default function SourcePage() {
               导入下一片段
             </button>
             <button
-              className="primary"
               disabled={s.busy || !!error || imported || edit !== null}
-              onClick={async () => {
-                if (confirmed) {
-                  await run("select", {
-                    scene: rows[selected]?.id || rows[0].id,
-                  });
-                  openAI(1);
-                  return;
-                }
-                if (await run("confirm_split", { rows })) {
-                  notify("拆分已确认，可选择情节解析资产。");
-                }
-              }}
+              onClick={() =>
+                review(
+                  rows.map((r) => r.id),
+                  confirmed ? "候选" : "已确认",
+                )
+              }
             >
-              {confirmed ? "解析本情节资产 →" : "确认拆分"}
+              {confirmed ? "全部转为候选" : "确认全部情节"}
+            </button>
+            <button
+              className="primary"
+              disabled={s.busy || current?.review !== "已确认" || edit !== null}
+              onClick={extract}
+            >
+              解析本情节资产 →
             </button>
           </>
         }
@@ -245,6 +322,31 @@ export default function SourcePage() {
           <button onClick={() => openAI(0)}>打开输出并手工修正</button>
         </div>
       )}
+      {missing.length > 0 && rows.length > 0 && (
+        <div className="notice warning">
+          未分配原文：{missing.map((p) => p.number).join("、")}{" "}
+          段。不会删除原文或阻止已确认情节制作。
+          <button
+            onClick={() =>
+              save(
+                [
+                  ...rows,
+                  ...missing.map((p) => ({
+                    id: freshId(),
+                    title: "待整理原文 · 段落 " + p.number,
+                    start_paragraph: p.number,
+                    end_paragraph: p.number,
+                    review: "候选",
+                    required_assets: [],
+                  })),
+                ].sort((a, b) => a.start_paragraph - b.start_paragraph),
+              )
+            }
+          >
+            为未分配原文补建卡片
+          </button>
+        </div>
+      )}
       <div className={"source-layout " + (!showSource ? "source-hidden" : "")}>
         {showSource && (
           <section className="source-paper">
@@ -252,7 +354,7 @@ export default function SourcePage() {
               <h2>原文对照</h2>
               <small>只读 · 原文件已保留</small>
             </header>
-            <div className="paragraph-list">
+            <div className="paragraph-list" ref={sourceRef}>
               {s.paragraphs.map((p) => (
                 <div
                   className={
@@ -310,16 +412,47 @@ export default function SourcePage() {
               {rows.map((row, i) => (
                 <article
                   className={"scene-card " + (selected === i ? "selected" : "")}
-                  key={i}
+                  key={row.id || i}
+                  tabIndex={0}
+                  aria-label={"情节：" + row.title}
+                  aria-selected={selected === i}
+                  onClick={(e) => {
+                    if (
+                      !e.target.closest("button,input,textarea,select,label")
+                    ) {
+                      setSelected(i);
+                      if (s.scenes.some((r) => r.id === row.id))
+                        run("select", { scene: row.id });
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (
+                      e.target === e.currentTarget &&
+                      (e.key === "Enter" || e.key === " ")
+                    ) {
+                      e.preventDefault();
+                      setSelected(i);
+                    }
+                  }}
                 >
                   <div className="card-meta">
                     <span>
                       情节 {String(i + 1).padStart(2, "0")} · 段落{" "}
                       {row.start_paragraph}—{row.end_paragraph}
                     </span>
-                    <span className="badge">
-                      {confirmed ? "已确认" : "候选"}
-                    </span>
+                    <button
+                      className="badge"
+                      disabled={s.busy || edit !== null || !!error}
+                      title="点击切换候选／确认状态"
+                      onClick={() =>
+                        review(
+                          [row.id],
+                          row.review === "已确认" ? "候选" : "已确认",
+                        )
+                      }
+                    >
+                      {row.review === "已确认" ? "已确认" : "候选"}
+                    </button>
                   </div>
                   {edit === i ? (
                     <div className="edit-form">
@@ -393,11 +526,10 @@ export default function SourcePage() {
                       <div className="actions">
                         <button
                           className="primary"
-                          onClick={() => {
+                          onClick={async () => {
                             const next = copy(rows);
-                            next[i] = editData;
-                            save(next);
-                            setEdit(null);
+                            next[i] = { ...editData, review: "候选" };
+                            if (await save(next)) setEdit(null);
                           }}
                         >
                           保存调整
@@ -433,12 +565,29 @@ export default function SourcePage() {
                     <button
                       className="quiet locate"
                       onClick={() => {
-                        setSelected(i);
-                        if (row.id) run("select", { scene: row.id });
+                        locate(i);
                       }}
                     >
                       <LocateFixed size={12} />
                       定位原文
+                    </button>
+                    <button
+                      disabled={s.busy}
+                      onClick={async () => {
+                        if (
+                          !window.confirm(
+                            "删除此情节卡？原文、历史资产及图片保留，可撤销。",
+                          )
+                        )
+                          return;
+                        if (!(await save(rows.filter((_, j) => j !== i))))
+                          return;
+                        setSelected(
+                          Math.max(0, Math.min(selected, rows.length - 2)),
+                        );
+                      }}
+                    >
+                      删除
                     </button>
                     <button disabled={s.busy} onClick={() => startEdit(i)}>
                       编辑
@@ -462,6 +611,7 @@ export default function SourcePage() {
                           b = next[i + 1];
                         next.splice(i, 2, {
                           ...a,
+                          review: "候选",
                           title: a.title + "与" + b.title,
                           summary: (a.summary || "") + (b.summary || ""),
                           end_paragraph: b.end_paragraph,
@@ -503,11 +653,14 @@ export default function SourcePage() {
                             1,
                             {
                               ...copy(row),
+                              review: "候选",
                               title: row.title + " · 前段",
                               end_paragraph: boundary,
                             },
                             {
                               ...copy(row),
+                              id: freshId(),
+                              review: "候选",
                               title: row.title + " · 后段",
                               start_paragraph: boundary + 1,
                             },
@@ -520,7 +673,7 @@ export default function SourcePage() {
                       </button>
                     </div>
                   )}
-                  {confirmed && (
+                  {row.review === "已确认" && (
                     <button
                       className="card-next quiet"
                       onClick={async () => {
@@ -540,7 +693,7 @@ export default function SourcePage() {
               <span className="muted small">
                 {error
                   ? "覆盖检查未通过"
-                  : `原文 ${s.paragraphs.length} / ${s.paragraphs.length} 段已覆盖 · 无遗漏、无重叠`}
+                  : `原文 ${covered.size} / ${s.paragraphs.length} 段已分配 · ${missing.length} 段未参与制作`}
               </span>
               <span className="small muted">
                 候选中的资产名称不会自动变成正式档案。

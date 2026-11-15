@@ -243,6 +243,8 @@ class Bridge(QObject):
             w.save_split(d["rows"])
         elif op == "confirm_split":
             w.confirm_split(d["rows"])
+        elif op == "review_scenes":
+            w.review_scenes(d["rows"], d.get("ids", []), d.get("status", "候选"))
         elif op == "set_depth":
             w.require_project()
             w.project.config["split_depth"] = str(d["depth"])
@@ -307,7 +309,7 @@ class Bridge(QObject):
             w.project.config.setdefault("image_prompt_drafts", {})[w.scene] = d["text"]
             w.project.save_config()
         elif op == "node_parameters":
-            return w.parameters(self.node(d))
+            return w.parameters(self.node(d), strict=False)
         elif op == "node_read":
             w.require_project()
             node = self.node(d)
@@ -560,10 +562,14 @@ class Bridge(QObject):
         w.require_project()
         w.guard()
         node = self.node(d)
+        if node not in (0, 7) and not d.get("asset"):
+            scene = w.project.scene(w.scene) if w.scene else None
+            if not scene or scene.get("review", "已确认") != "已确认":
+                raise ValueError("请先确认当前情节")
         record = w.project.load_node(w.scope(node, d.get("asset")), node)
-        refs = set(d.get("attachments", [])) | {
-            f for m in record["messages"] for f in m.get("attachments", [])
-        }
+        refs = set(d.get("attachments", []))
+        if not w.store.settings(w.account).get("compact_requests", True):
+            refs |= {f for m in record["messages"] for f in m.get("attachments", [])}
         paths = [w.file(f) for f in refs]
         params = w.parameters(node)
         if (
@@ -583,7 +589,13 @@ class Bridge(QObject):
 
         def run(cancel, progress):
             return text_call(
-                job["params"], job["messages"], job["context"], key, paths, cancel
+                job["params"],
+                job["messages"],
+                job["context"],
+                key,
+                paths,
+                cancel,
+                metadata=job,
             )
 
         self.start(job, run, text=True)
@@ -598,11 +610,11 @@ class Bridge(QObject):
             raise ValueError("目标资产不存在")
         task = asset["kind"] if asset else "illustration"
         config = w.store.image_defaults(w.account)
-        if asset and not config.get("tasks", {}).get(task, {}).get("connection_id"):
-            raise ValueError(
-                "请先为此类资产参考图保存独立图片任务配置；不会借用插图连接"
-            )
-        config = dict(config, **config.get("tasks", {}).get(task, {}))
+        task_config = config.get("tasks", {}).get(task, {})
+        if task_config.get(
+            "connection_override", bool(task_config.get("connection_id"))
+        ):
+            config = dict(config, **task_config)
         cid = config.get("connection_id", "image-default")
         profile = next(
             (c for c in w.store.connections(w.account) if c["id"] == cid), None
@@ -616,7 +628,9 @@ class Bridge(QObject):
             prompt += "\n\n【图片节点约束】\n" + config["generation_rules"]
         rows = w.project.scene_assets(w.scene) if w.scene and not asset else []
         issues = [r["name"] + "：" + r["problem"] for r in rows if r["problem"]]
-        if not asset and not w.scene:
+        if not asset and (
+            not w.scene or w.project.scene(w.scene).get("review", "已确认") != "已确认"
+        ):
             raise ValueError("请先确认并选择情节")
         if not asset and not rows:
             issues.append("此情节尚未关联资产")
@@ -651,6 +665,9 @@ class Bridge(QObject):
         job = dict(
             id=uid(),
             kind="资产参考图" if asset else "场景插图",
+            node=4,
+            scope="asset_" + asset["id"] if asset else w.scene,
+            phase="等待生图服务响应",
             created=now(),
             status="running",
             segment=w.segment,
@@ -892,7 +909,7 @@ class LocalPage(QWebEnginePage):
 class Desktop(QMainWindow):
     def __init__(self, root):
         super().__init__()
-        self.setWindowTitle("墨境 · 小说文本可视化 · v0.4.0-beta.1 测试版")
+        self.setWindowTitle("墨境 · 小说文本可视化 · v0.4.1-beta.1 测试版")
         self.bridge = Bridge(root, self)
         self.view = QWebEngineView(self)
         page = LocalPage(self.view)

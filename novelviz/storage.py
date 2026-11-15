@@ -39,6 +39,10 @@ DIRS = [
     "08_项目数据",
 ]
 DEFAULTS = dict(
+    language_connection_id="",
+    language_max_tokens=10000,
+    language_temperature=0.5,
+    compact_requests=True,
     theme="system",
     background="",
     background_opacity=18,
@@ -113,10 +117,19 @@ def clean_settings(data):
     for k in SETTING_KEYS:
         if k in data and type(data[k]) is type(DEFAULTS[k]):
             out[k] = data[k]
+        elif (
+            k in data
+            and type(DEFAULTS[k]) is float
+            and type(data[k]) in (int, float)
+            and math.isfinite(data[k])
+        ):
+            out[k] = float(data[k])
     if out["theme"] not in ("light", "dark", "system"):
         out["theme"] = "light"
     if out["provider"] not in ("demo", "openai"):
         out["provider"] = "demo"
+    out["language_max_tokens"] = max(1, min(131072, out["language_max_tokens"]))
+    out["language_temperature"] = max(0.0, min(2.0, out["language_temperature"]))
     out["max_tokens"] = max(1, min(131072, out["max_tokens"]))
     out["temperature"] = max(0.0, min(2.0, out["temperature"]))
     out["font_size"] = max(11, min(24, out["font_size"]))
@@ -289,6 +302,7 @@ class Store:
                 t = copy.deepcopy(t)
                 t["id"] = "import-" + uid()
                 templates.append(t)
+        s["language_connection_id"] = id_map.get(s.get("language_connection_id"), "")
         self.save_settings(a, s)
         for c in profiles:
             self.save_connection(a, c)
@@ -384,6 +398,8 @@ class Store:
             "max_tokens",
             "temperature",
             "template_id",
+            "connection_override",
+            "parameter_override",
         }
         if not isinstance(params, dict):
             raise ValueError("节点参数必须为对象")
@@ -435,6 +451,7 @@ class Store:
             "size",
             "generation_rules",
             "tasks",
+            "connection_override",
         }
         cleaned = {
             k: copy.deepcopy(v) for k, v in data.items() if k in fields and k != "tasks"
@@ -602,8 +619,9 @@ class Project:
         data.setdefault("summary", "")
         data.setdefault("id", uid())
         old = self.scene(data["id"])
-        data.setdefault("revision", 0)
-        data["revision"] += 1
+        data["revision"] = (
+            max(data.get("revision", 0), (old or {}).get("revision", 0)) + 1
+        )
         data["updated"] = now()
         text = self.segment_text(sid)
         data["source_hash"] = hashlib.sha256(text.encode()).hexdigest()

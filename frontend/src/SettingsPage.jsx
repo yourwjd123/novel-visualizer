@@ -5,7 +5,9 @@ import { PageHeading } from "./App";
 import { api } from "./api";
 
 export default function SettingsPage() {
-  const { s, run, notify, dirty } = useWorkspace();
+  const { s, run, refresh, notify, dirty } = useWorkspace();
+  const [customKind, setCustomKind] = useState("language");
+  const [shared, setShared] = useState({ ...s.settings });
   const [section, setSection] = useState("language"),
     [node, setNode] = useState(0),
     [params, setParams] = useState(null),
@@ -14,6 +16,9 @@ export default function SettingsPage() {
     [image, setImage] = useState(null),
     [appearance, setAppearance] = useState(copy(s.settings)),
     [rules, setRules] = useState(s.rules || "");
+  const textMode =
+    section === "language" ||
+    (section === "custom" && customKind === "language");
   async function loadNode(n) {
     try {
       setParams(await api("node_parameters", { node: n }));
@@ -24,28 +29,47 @@ export default function SettingsPage() {
   }
   useEffect(() => {
     loadNode(node);
-  }, [node, s.account.id]);
+  }, [
+    node,
+    s.account.id,
+    JSON.stringify(s.defaults?.[String(node)]),
+    s.settings.language_connection_id,
+  ]);
   useEffect(() => {
     setImage({
       ...s.image_settings,
-      ...s.image_settings.tasks?.[task],
+      ...(section === "custom" ? s.image_settings.tasks?.[task] : {}),
       connection_id:
-        s.image_settings.tasks?.[task]?.connection_id ||
+        (section === "custom"
+          ? s.image_settings.tasks?.[task]?.connection_id
+          : "") ||
         s.image_settings.connection_id ||
         "image-default",
     });
-  }, [task, s.image_settings]);
+  }, [task, s.image_settings, section, customKind]);
   const canLeave = () =>
     !dirty.current || window.confirm("有尚未保存的设置，放弃这些修改吗？");
-  const connections = s.connections.filter((c) =>
-    section === "language"
-      ? ["demo", "openai"].includes(c.kind)
-      : ["comfy", "image_api"].includes(c.kind),
-  );
+  const connections = s.connections
+    .filter((c) =>
+      textMode
+        ? ["demo", "openai"].includes(c.kind)
+        : ["comfy", "image_api"].includes(c.kind),
+    )
+    .filter(
+      (c) =>
+        section !== "language" ||
+        c.kind !== "demo" ||
+        c.id === "node-0" ||
+        c.id === shared.language_connection_id,
+    );
   const connection = connections.find(
     (c) =>
       c.id ===
-      (section === "language" ? params?.connection_id : image?.connection_id),
+      (textMode
+        ? section === "language"
+          ? shared.language_connection_id
+          : params?.connection_id
+        : image?.connection_id),
   );
   function setParam(k, v) {
     setParams((p) => ({ ...p, [k]: v }));
@@ -62,7 +86,7 @@ export default function SettingsPage() {
     }
     if (await run("node_settings", { node, params })) {
       dirty.current = false;
-      notify("此节点的独立连接与提示词已保存，对后续调用生效");
+      notify("节点提示词与继承／覆盖设置已保存，对后续调用生效");
     }
   }
   async function saveImage() {
@@ -77,12 +101,13 @@ export default function SettingsPage() {
       notify("工作流或映射不是有效 JSON");
       return;
     }
-    const next = {
-      ...s.image_settings,
-      tasks: { ...s.image_settings.tasks, [task]: image },
-    };
-    if (task === "illustration")
-      Object.assign(next, image, { tasks: next.tasks });
+    const next =
+      section === "image"
+        ? { ...image, tasks: s.image_settings.tasks || {} }
+        : {
+            ...s.image_settings,
+            tasks: { ...s.image_settings.tasks, [task]: image },
+          };
     if (await run("image_settings", next)) {
       dirty.current = false;
       notify("当前图片任务配置已保存");
@@ -97,7 +122,8 @@ export default function SettingsPage() {
       <div className="settings-tabs">
         {[
           ["language", "语言模型配置"],
-          ["image", "图片模型配置"],
+          ["image", "生图模型配置"],
+          ["custom", "自定义节点接口"],
           ["appearance", "外观与项目规则"],
           ["transfer", "导入与导出"],
         ].map(([id, label]) => (
@@ -115,7 +141,172 @@ export default function SettingsPage() {
           </button>
         ))}
       </div>
-      {section === "language" && params && (
+      {section === "language" && (
+        <section className="settings-sheet">
+          <h2>默认大语言模型</h2>
+          <p className="muted">
+            所有文本节点默认使用此连接；API
+            与本地兼容服务均可。各节点的任务提示词保持独立。
+          </p>
+          <label>
+            默认连接
+            <select
+              value={shared.language_connection_id || ""}
+              onChange={(e) => {
+                setShared({
+                  ...shared,
+                  language_connection_id: e.target.value,
+                });
+                dirty.current = true;
+              }}
+            >
+              <option value="">尚未选择（保留旧版节点配置）</option>
+              {connections.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="actions">
+            <button
+              onClick={() => setEditor(connection)}
+              disabled={!connection}
+            >
+              编辑连接 / 密钥
+            </button>
+            <button
+              onClick={() =>
+                setEditor({
+                  id: "conn-" + freshId(),
+                  name: "默认语言模型",
+                  kind: "openai",
+                  endpoint: "http://127.0.0.1:11434/v1",
+                  model: "",
+                  max_tokens: 10000,
+                  temperature: 0.5,
+                })
+              }
+            >
+              新建语言连接
+            </button>
+          </div>
+          <div className="field-pair">
+            <label>
+              默认最大输出 token
+              <input
+                type="number"
+                min="1"
+                max="131072"
+                value={shared.language_max_tokens}
+                onChange={(e) => {
+                  setShared({
+                    ...shared,
+                    language_max_tokens: Number(e.target.value),
+                  });
+                  dirty.current = true;
+                }}
+              />
+            </label>
+            <label>
+              默认温度
+              <input
+                type="number"
+                min="0"
+                max="2"
+                step="0.1"
+                value={shared.language_temperature}
+                onChange={(e) => {
+                  setShared({
+                    ...shared,
+                    language_temperature: Number(e.target.value),
+                  });
+                  dirty.current = true;
+                }}
+              />
+            </label>
+          </div>
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={shared.compact_requests !== false}
+              onChange={(e) => {
+                setShared({ ...shared, compact_requests: e.target.checked });
+                dirty.current = true;
+              }}
+            />
+            精简请求：减少重复模型草稿，仅发送本轮附件；完整记录保存在本地
+          </label>
+          <button
+            className="primary"
+            onClick={async () => {
+              if (!shared.language_connection_id)
+                return notify("请选择默认语言连接");
+              if (
+                await run("settings", {
+                  language_connection_id: shared.language_connection_id,
+                  language_max_tokens: shared.language_max_tokens,
+                  language_temperature: shared.language_temperature,
+                  compact_requests: shared.compact_requests,
+                })
+              ) {
+                for (let n = 0; n < s.nodes.length; n++) {
+                  const previous = s.defaults[String(n)] || {};
+                  if (
+                    previous.connection_override !== true &&
+                    !previous.connection_id
+                  )
+                    await run(
+                      "node_settings",
+                      {
+                        node: n,
+                        params: {
+                          ...previous,
+                          connection_override: false,
+                          parameter_override: false,
+                        },
+                      },
+                      false,
+                    );
+                }
+                await refresh();
+                dirty.current = false;
+                notify("默认语言配置已保存；未启用自定义覆盖的节点自动继承");
+              }
+            }}
+          >
+            保存默认语言配置
+          </button>
+        </section>
+      )}
+      {section === "custom" && (
+        <div className="actions separated">
+          <button
+            onClick={() => {
+              if (canLeave()) {
+                setCustomKind("language");
+                dirty.current = false;
+              }
+            }}
+          >
+            文本节点与提示词
+          </button>
+          <button
+            onClick={() => {
+              if (canLeave()) {
+                setCustomKind("image");
+                dirty.current = false;
+              }
+            }}
+          >
+            生图节点
+          </button>
+          <span className="muted small">
+            未启用覆盖时继承对应默认接口；旧版独立配置仍保留。
+          </span>
+        </div>
+      )}
+      {section === "custom" && customKind === "language" && params && (
         <section className="settings-sheet">
           <label>
             任务节点
@@ -133,6 +324,24 @@ export default function SettingsPage() {
                 </option>
               ))}
             </select>
+          </label>
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={!!params.connection_override}
+              onChange={(e) =>
+                setParam("connection_override", e.target.checked)
+              }
+            />
+            为此节点启用独立接口（否则继承默认语言模型）
+          </label>
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={params.parameter_override !== false}
+              onChange={(e) => setParam("parameter_override", e.target.checked)}
+            />
+            为此节点启用独立输出上限和温度
           </label>
           <div className="connection-row">
             <label>
@@ -298,146 +507,175 @@ export default function SettingsPage() {
           </div>
         </section>
       )}
-      {section === "image" && image && (
-        <section className="settings-sheet">
-          <label>
-            图片任务
-            <select
-              value={task}
-              onChange={(e) => {
-                if (canLeave()) {
-                  dirty.current = false;
-                  setTask(e.target.value);
+      {(section === "image" ||
+        (section === "custom" && customKind === "image")) &&
+        image && (
+          <section className="settings-sheet">
+            {section === "image" && (
+              <p className="muted">
+                默认承担人物、场景、道具参考图和场景插图。支持云端 API 或本地
+                ComfyUI。节点覆盖在“自定义节点接口”中设置。
+              </p>
+            )}
+            {section === "custom" && (
+              <>
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={
+                      image.connection_override ??
+                      !!s.image_settings.tasks?.[task]?.connection_id
+                    }
+                    onChange={(e) =>
+                      setImageField("connection_override", e.target.checked)
+                    }
+                  />
+                  为此图片任务启用独立配置
+                </label>
+                <label>
+                  图片任务
+                  <select
+                    value={task}
+                    onChange={(e) => {
+                      if (canLeave()) {
+                        dirty.current = false;
+                        setTask(e.target.value);
+                      }
+                    }}
+                  >
+                    <option value="illustration">场景插图生成</option>
+                    <option>人物</option>
+                    <option>场景</option>
+                    <option>道具</option>
+                  </select>
+                </label>
+              </>
+            )}
+            <div className="connection-row">
+              <label>
+                {section === "image" ? "默认图片连接" : "独立图片连接"}
+                <select
+                  value={image.connection_id || "image-default"}
+                  onChange={(e) =>
+                    setImageField("connection_id", e.target.value)
+                  }
+                >
+                  {connections.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button onClick={() => setEditor(connection || connections[0])}>
+                编辑配置 / 密钥
+              </button>
+              <button
+                onClick={() =>
+                  setEditor({
+                    id: "image-" + freshId(),
+                    name: "独立图片连接",
+                    kind: "comfy",
+                    endpoint: "http://127.0.0.1:8188",
+                    model: "",
+                    vision: false,
+                    max_tokens: 4096,
+                    temperature: 0.5,
+                  })
                 }
-              }}
-            >
-              <option value="illustration">场景插图生成</option>
-              <option>人物</option>
-              <option>场景</option>
-              <option>道具</option>
-            </select>
-          </label>
-          <div className="connection-row">
-            <label>
-              独立图片连接
-              <select
-                value={image.connection_id || "image-default"}
-                onChange={(e) => setImageField("connection_id", e.target.value)}
               >
-                {connections.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button onClick={() => setEditor(connection || connections[0])}>
-              编辑配置 / 密钥
-            </button>
-            <button
-              onClick={() =>
-                setEditor({
-                  id: "image-" + freshId(),
-                  name: "独立图片连接",
-                  kind: "comfy",
-                  endpoint: "http://127.0.0.1:8188",
-                  model: "",
-                  vision: false,
-                  max_tokens: 4096,
-                  temperature: 0.5,
-                })
-              }
-            >
-              新建图片连接
-            </button>
-          </div>
-          <p className="muted small">
-            图片任务不借用语言模型密钥。兼容图片 API
-            当前仅文生图；参考图输入请使用已映射的 ComfyUI 工作流。
-          </p>
-          <div className="field-pair">
+                新建图片连接
+              </button>
+            </div>
+            <p className="muted small">
+              图片任务不借用语言模型密钥。兼容图片 API
+              当前仅文生图；参考图输入请使用已映射的 ComfyUI 工作流。
+            </p>
+            <div className="field-pair">
+              <label>
+                输出尺寸（图片 API）
+                <select
+                  value={image.size || "1024x1024"}
+                  onChange={(e) => setImageField("size", e.target.value)}
+                >
+                  <option>1024x1024</option>
+                  <option>1536x1024</option>
+                  <option>1024x1536</option>
+                  <option>1792x1024</option>
+                  <option>1024x1792</option>
+                </select>
+              </label>
+              <label>
+                Seed（ComfyUI）
+                <input
+                  type="number"
+                  value={image.seed ?? 42}
+                  onChange={(e) =>
+                    setImageField("seed", Number(e.target.value))
+                  }
+                />
+              </label>
+            </div>
             <label>
-              输出尺寸（图片 API）
-              <select
-                value={image.size || "1024x1024"}
-                onChange={(e) => setImageField("size", e.target.value)}
-              >
-                <option>1024x1024</option>
-                <option>1536x1024</option>
-                <option>1024x1536</option>
-                <option>1792x1024</option>
-                <option>1024x1792</option>
-              </select>
-            </label>
-            <label>
-              Seed（ComfyUI）
-              <input
-                type="number"
-                value={image.seed ?? 42}
-                onChange={(e) => setImageField("seed", Number(e.target.value))}
+              ComfyUI API 工作流
+              <textarea
+                className="code"
+                rows={10}
+                value={image.workflow || ""}
+                onChange={(e) => setImageField("workflow", e.target.value)}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={async (e) => {
+                  e.preventDefault();
+                  const file = e.dataTransfer.files[0];
+                  if (file?.name.endsWith(".json"))
+                    setImageField("workflow", await file.text());
+                }}
+                placeholder="粘贴或拖入 API 格式 JSON；不是编辑器格式"
               />
             </label>
-          </div>
-          <label>
-            ComfyUI API 工作流
-            <textarea
-              className="code"
-              rows={10}
-              value={image.workflow || ""}
-              onChange={(e) => setImageField("workflow", e.target.value)}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={async (e) => {
-                e.preventDefault();
-                const file = e.dataTransfer.files[0];
-                if (file?.name.endsWith(".json"))
-                  setImageField("workflow", await file.text());
-              }}
-              placeholder="粘贴或拖入 API 格式 JSON；不是编辑器格式"
-            />
-          </label>
-          <label>
-            导入工作流 JSON
-            <input
-              type="file"
-              accept=".json"
-              onChange={async (e) => {
-                if (e.target.files[0])
-                  setImageField("workflow", await e.target.files[0].text());
-              }}
-            />
-          </label>
-          <label>
-            节点映射
-            <textarea
-              className="code"
-              rows={5}
-              value={image.mapping || ""}
-              onChange={(e) => setImageField("mapping", e.target.value)}
-              placeholder={
-                '{"prompt":["6","text"],"seed":["3","seed"],"reference_1":["10","image"]}'
-              }
-            />
-          </label>
-          <p className="muted small">
-            reference_1、reference_2
-            等按场景关联卡顺序对应。未映射的参考图不会上传，生成前会提示。
-          </p>
-          <label>
-            默认生成约束
-            <textarea
-              rows={5}
-              value={image.generation_rules || ""}
-              onChange={(e) =>
-                setImageField("generation_rules", e.target.value)
-              }
-              placeholder="只作用于此图片任务，不与人物三视图、空环境图等模板混用"
-            />
-          </label>
-          <button className="primary" onClick={saveImage}>
-            保存此图片任务配置
-          </button>
-        </section>
-      )}
+            <label>
+              导入工作流 JSON
+              <input
+                type="file"
+                accept=".json"
+                onChange={async (e) => {
+                  if (e.target.files[0])
+                    setImageField("workflow", await e.target.files[0].text());
+                }}
+              />
+            </label>
+            <label>
+              节点映射
+              <textarea
+                className="code"
+                rows={5}
+                value={image.mapping || ""}
+                onChange={(e) => setImageField("mapping", e.target.value)}
+                placeholder={
+                  '{"prompt":["6","text"],"seed":["3","seed"],"reference_1":["10","image"]}'
+                }
+              />
+            </label>
+            <p className="muted small">
+              reference_1、reference_2
+              等按场景关联卡顺序对应。未映射的参考图不会上传，生成前会提示。
+            </p>
+            <label>
+              默认生成约束
+              <textarea
+                rows={5}
+                value={image.generation_rules || ""}
+                onChange={(e) =>
+                  setImageField("generation_rules", e.target.value)
+                }
+                placeholder="只作用于此图片任务，不与人物三视图、空环境图等模板混用"
+              />
+            </label>
+            <button className="primary" onClick={saveImage}>
+              保存此图片任务配置
+            </button>
+          </section>
+        )}
       {section === "appearance" && (
         <section className="settings-sheet">
           <div className="notice">
@@ -559,7 +797,7 @@ export default function SettingsPage() {
           <div className="separated">
             <h2>测试版本与许可</h2>
             <p className="muted small prose">
-              v0.4.0-beta.1 · GPL-3.0。UI 标签交互与纸墨基础参考
+              v0.4.1-beta.1 · GPL-3.0。UI 标签交互与纸墨基础参考
               Pagekin；视觉资产卡参考 Story Asset
               Studio（MIT）。对应版权和完整许可随源码提供。此应用只做已有文本可视化，不提供小说创作功能。
             </p>
@@ -570,12 +808,15 @@ export default function SettingsPage() {
         <ConnectionEditor
           key={editor.id}
           profile={editor}
-          imageOnly={section === "image"}
+          imageOnly={!textMode}
           onClose={() => setEditor(null)}
           onSaved={(id) => {
             setEditor(null);
-            if (section === "language") setParam("connection_id", id);
-            else setImageField("connection_id", id);
+            if (textMode) {
+              if (section === "language")
+                setShared((v) => ({ ...v, language_connection_id: id }));
+              else setParam("connection_id", id);
+            } else setImageField("connection_id", id);
           }}
         />
       )}
@@ -596,10 +837,10 @@ function ConnectionEditor({ profile, imageOnly, onClose, onSaved }) {
         className="modal"
         role="dialog"
         aria-modal="true"
-        aria-label="独立连接与密钥"
+        aria-label="连接与密钥"
       >
         <div className="modal-heading">
-          <h2>独立连接与密钥</h2>
+          <h2>连接与密钥</h2>
           <button
             className="icon quiet"
             aria-label="关闭连接设置"

@@ -111,6 +111,7 @@ def main():
             QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu --disable-dev-shm-usage",
             QTWEBENGINE_REMOTE_DEBUGGING=str(port),
             PYTHONPATH=str(ROOT),
+            NOVELVIZ_E2E_LONG_RESPONSE="1",
         )
         with (output / "native.log").open("w", encoding="utf-8") as log:
             process = subprocess.Popen(
@@ -135,6 +136,14 @@ def main():
                 c.wait("document.querySelector('.account-list button')")
                 c.evaluate("document.querySelector('.account-list button').click()")
                 c.wait("document.querySelectorAll('.paragraph').length===8")
+                c.evaluate(
+                    "document.querySelector('.paragraph-list').style.cssText='height:100px;min-height:0;max-height:100px'"
+                )
+                c.evaluate(
+                    "[...document.querySelectorAll('.scene-card')].at(-1).querySelector('.locate').click()"
+                )
+                c.wait("document.querySelector('.paragraph-list').scrollTop>0")
+                c.evaluate("document.querySelector('.paragraph-list').style.cssText=''")
                 c.screenshot(output / "source.png")
                 c.click("视觉资产库", ".workspace-tabs button")
                 c.wait("document.querySelectorAll('.image-card').length===6")
@@ -174,9 +183,9 @@ def main():
                     "textarea[aria-label='本轮对话输入']", "保持交信动作与原文一致。"
                 )
                 c.click("发送", ".assistant-compose button")
-                c.wait("document.querySelector('.message.assistant')", 20)
+                c.wait("document.querySelector('.message.message-assistant')", 20)
                 c.screenshot(output / "assistant.png")
-                c.click("采用到待确认方案 →", ".message.assistant button")
+                c.click("采用到待确认方案 →", ".message.message-assistant button")
                 c.wait("document.querySelector('.assistant-body textarea')")
                 c.click("确认最终方案", ".assistant-body button")
                 c.evaluate(
@@ -193,17 +202,97 @@ def main():
                 c.click("分析并生成候选", ".source-toolbar button")
                 c.wait("document.querySelectorAll('.scene-card').length===2", 20)
                 c.wait(
-                    "[...document.querySelectorAll('.page-heading button')].some(b=>b.textContent==='确认拆分'&&!b.disabled)"
+                    "[...document.querySelectorAll('.page-heading button')].some(b=>b.textContent==='确认全部情节'&&!b.disabled)"
                 )
-                c.click("确认拆分", ".page-heading button")
+                c.click("确认全部情节", ".page-heading button")
                 c.wait(
                     "document.querySelector('.status-line').innerText.includes('拆分已确认')"
                 )
+                # Card surface selects, badges toggle, delete and undo retain identity.
+                c.evaluate("document.querySelectorAll('.scene-card')[1].click()")
+                c.wait(
+                    "document.querySelectorAll('.scene-card')[1].classList.contains('selected')"
+                )
+                c.evaluate("document.querySelectorAll('.scene-card .badge')[1].click()")
+                c.wait(
+                    "document.querySelectorAll('.scene-card .badge')[1].textContent.trim()==='候选'"
+                )
+                c.evaluate("document.querySelectorAll('.scene-card .badge')[1].click()")
+                c.wait(
+                    "document.querySelectorAll('.scene-card .badge')[1].textContent.trim()==='已确认'"
+                )
+                c.evaluate(
+                    "[...document.querySelectorAll('.scene-card')[1].querySelectorAll('button')].find(b=>b.textContent==='删除').click()"
+                )
+                c.wait("document.querySelectorAll('.scene-card').length===1")
+                c.click("撤销调整")
+                c.wait("document.querySelectorAll('.scene-card').length===2")
+                c.click("解析本情节资产 →", ".page-heading button")
+                c.wait(
+                    "document.querySelector('.assistant:not([hidden]) .message.message-assistant')",
+                    20,
+                )
+                c.wait(
+                    "document.querySelector('.assistant-run-status').innerText.includes('任务完成')"
+                )
+                c.wait(
+                    "document.querySelector('.assistant .messages').innerText.includes('演示资产')"
+                )
+                assert (
+                    c.evaluate(
+                        "document.querySelector('.assistant .messages').innerText.length"
+                    )
+                    > 30000
+                )
+                # A real pointer click on the close control works with a long reply.
+                close_rect = c.evaluate(
+                    "(()=>{const r=document.querySelector('[aria-label=\"收起 AI 助手\"]').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,right:r.right,bottom:r.bottom}})()"
+                )
+                assert close_rect["right"] <= c.evaluate("innerWidth")
+                assert close_rect["bottom"] <= c.evaluate("innerHeight")
+                c.screenshot(output / "asset-extraction.png")
+                for event in ("mousePressed", "mouseReleased"):
+                    c.call(
+                        "Input.dispatchMouseEvent",
+                        dict(
+                            type=event,
+                            x=close_rect["x"],
+                            y=close_rect["y"],
+                            button="left",
+                            clickCount=1,
+                        ),
+                    )
+                c.wait("document.querySelector('.assistant').hidden")
+                c.click("✧ AI 助手", ".ai-launch")
+                c.wait("!document.querySelector('.assistant').hidden")
+                # Escape and launcher toggle work independently of save callbacks.
+                c.call(
+                    "Input.dispatchKeyEvent",
+                    dict(
+                        type="keyDown",
+                        key="Escape",
+                        code="Escape",
+                        windowsVirtualKeyCode=27,
+                    ),
+                )
+                c.wait("document.querySelector('.assistant').hidden")
+                c.click("✧ AI 助手", ".ai-launch")
+                c.wait("!document.querySelector('.assistant').hidden")
+                c.click("✧ AI 助手", ".ai-launch")
+                c.wait("document.querySelector('.assistant').hidden")
                 c.click("设置", ".system-sidebar button")
-                c.wait("document.querySelector('.settings-sheet textarea')")
+                c.wait("document.querySelector('.settings-sheet select')")
                 assert "语言模型配置" in c.evaluate(
                     "document.querySelector('.settings-tabs').innerText"
                 )
+                c.fill(".settings-sheet select", "node-0")
+                c.fill(".settings-sheet input[type=number]", "10000")
+                c.click("保存默认语言配置")
+                c.wait(
+                    "document.querySelector('.toast')?.innerText.includes('默认语言配置已保存')"
+                )
+                c.click("自定义节点接口", ".settings-tabs button")
+                c.wait("document.querySelector('.settings-sheet textarea')")
                 c.fill(".settings-sheet input[type=number]", "1234")
                 c.click("保存此节点配置")
                 c.screenshot(output / "settings.png")
@@ -228,6 +317,27 @@ def main():
                             mobile=False,
                         ),
                     )
+                    c.click("✧ AI 助手", ".ai-launch")
+                    c.wait("!document.querySelector('.assistant').hidden")
+                    bounds = c.evaluate(
+                        "(()=>{const r=document.querySelector('[aria-label=\"收起 AI 助手\"]').getBoundingClientRect();return {x:r.x,y:r.y,right:r.right,bottom:r.bottom}})()"
+                    )
+                    assert (
+                        bounds["x"] >= 0
+                        and bounds["right"] <= width
+                        and bounds["y"] >= 0
+                        and bounds["bottom"] <= 900
+                    ), (width, bounds)
+                    c.call(
+                        "Input.dispatchKeyEvent",
+                        dict(
+                            type="keyDown",
+                            key="Escape",
+                            code="Escape",
+                            windowsVirtualKeyCode=27,
+                        ),
+                    )
+                    c.wait("document.querySelector('.assistant').hidden")
                     for tab in ["原文与情节", "视觉资产库", "场景插图", "成果集"]:
                         c.click(tab, ".workspace-tabs button")
                         assert c.evaluate(
@@ -252,7 +362,10 @@ def main():
                                 "multi-round demo provider",
                                 "import without AI",
                                 "review candidates before confirm",
-                                "node settings",
+                                "default and custom interface settings",
+                                "card selection, individual confirmation and delete/undo",
+                                "asset extraction button starts model task",
+                                "assistant escape and launcher toggle",
                                 "responsive layout",
                             ],
                         ),

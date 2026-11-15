@@ -3,7 +3,7 @@
 import copy
 import json
 
-VERSION = "2.0"
+VERSION = "2.1"
 COMMON = """你正在协助用户把小说原文转化为场景插图。以本次提供的原文、已确认设定及用户要求为依据。
 一、逐项区分【原文明确】【合理推测】【视觉建议】【用户改编】；不要把猜测说成事实。事实必须引用原文段落编号及短证据，未提供证据时明确标为未知。
 二、锁定/已确认资产不能被后续推测覆盖。发现矛盾时并列列出原设定、新证据及影响，等待用户选择。
@@ -22,9 +22,7 @@ TASKS = {
         """目标：将原文划为连续、可编辑的情节模块，供单张场景插图使用。
 粗：主要事件；中：同一时空连续行动；细：适合单张插图的瞬间。用户给出的深度优先。
 以地点、时间、视角、主要行动和事件转折划界，不机械按字数截断，不割裂紧密动作与对话。对提供的段落顺序完整覆盖，每段恰好归属一次，不能遗漏、重叠或编造段落编号。
-每个模块给客观短标题（建议4—16字）、摘要、起止段落、人物/场景/道具名称、视觉瞬间、拆分依据及待确认项。标题不得剧透。
-输出 JSON 对象，字段 scenes 为数组。各项包含 title, summary, start_paragraph, end_paragraph, required_assets（对象数组：name, kind；kind仅人物/场景/道具）, visual_moment, rationale, questions。
-编号从1开始且含首尾。例如 {"scenes":[{"title":"雨夜渡口","summary":"旅人提灯候船","start_paragraph":1,"end_paragraph":2,"required_assets":[{"name":"旅人","kind":"人物"}],"visual_moment":"提灯望向江面","rationale":"同一时空行动","questions":["面容未描述"]}]}。仅输出候选，不视为已确认。""",
+每个模块给客观短标题（4—16字）、简短摘要（建议不超过80字）、起止段落、必要资产名称和单个视觉瞬间（建议不超过60字）。只在存在歧义时填写 rationale 和 questions，否则可省略。不要逐段复述原文。字段遵循下方唯一输出约定。仅输出候选，不视为已确认。""",
     ),
     "resplit": (
         "调整已有拆分",
@@ -40,7 +38,7 @@ TASKS = {
         """目标：为当前情节建立人物、场景、道具候选卡片。先对照已有资产ID及名称，匹配同一对象；别名/称谓相似只能建议，不能自动合并。
 人物提取身份、别名、面容、发型、体态、服装、装备、伤势与变化；场景提取地点、空间结构、建筑、天气、时段、光线；道具提取材质、颜色、形状、尺寸、持有人与状态。原文未描述则未知，不用常识补全。
 每条属性用 attributes 数组记录 name（属性名）、value（属性值）、source（来源）、evidence（段落与摘录）；状态另列生效范围。情绪比喻不直接当客观天气。稳定身份与时序状态分开。与锁定档案冲突时标记 conflict，不覆盖。
-JSON：{"assets":[{"name":"沈青","kind":"人物","existing_id":null,"description":"灰蓝布衣；面容未知","source":"原文明确","evidence":[{"paragraph":2,"quote":"穿着灰蓝色布衣"}],"states":[{"range":"当前情节","detail":"灰蓝布衣"}],"suggestions":[],"conflicts":[],"missing":["面容"]}]}。
+字段遵循下方输出约定。稳定档案、状态与属性不要重复描述同一信息；证据只引用足以支撑判断的短摘录。已有资产优先指出新增属性、状态变化和冲突，不重建全部档案。
 kind仅人物/场景/道具，source仅原文明确/AI 建议/用户自定；待审核由程序设置。已有ID仅作为人工合并建议。""",
     ),
     "characters": (
@@ -278,3 +276,33 @@ def validate_assets(data, paragraph_count):
             ):
                 raise ValueError("证据段落超出原文范围或证据格式无效")
     return rows
+
+
+# Exact hashes preserve user edits while upgrading untouched built-in templates.
+_LEGACY_BODIES = {
+    "split": "3c38d056ee67541d007e1780d41e3b493e5a227249a7f485b77bb38dee1fce79",
+    "resplit": "8c36bbbe366df5d146d2adba90acfda0a0325839acee4167e5feaee86f89cd89",
+    "assets": "090956c59f9fe3a908f1d043dce6940311ae0f34be1c2d70fe8ebc9bba1f8586",
+    "characters": "acb8430c550a63b7aadc97f05e12861d97bbeca0618072e5de67d3bdd16f9428",
+    "places": "88a79b1d3f22c14d83121415370b6d60da2d1b3549fcca2de621d41d67d35a1b",
+    "props": "3f81c39f4549e15d1a726efe7a7b65231d5f281ca7f3ce2bcffe2af06593dd31",
+    "scene": "ea2c3efc14151918c525146da5b1c1d0cce0cae74cf7bc66ff03c17634c23449",
+    "prompt": "842654b1210362df8ae8f55befbd798e66869ffcf819225ed2f84e502f30d778",
+    "image": "1c999ddad181002b75a822e95585ace0e4a86f38bd9642a09d85e96e39a878a6",
+    "reference": "139740eea3f72c81953e024543cc21c5ce3524ca4a3dc2e005f8d3ccdc77de8e",
+    "review": "769ebaf379233a5d7d89fbdbf687db35b99020ec57fc5740c9363ad3cbb6e705",
+    "edit": "a1e233776118cb9fb772449e3bfccf4be63958f533afa2231ed8da2081dd8c7c",
+    "planner": "688b8b81619a734e103317cecb3b69edb3a9139965811cbf149eebc5d5a8d193",
+}
+
+
+def upgrade_template(template):
+    import hashlib
+
+    if template.get("version") == "2.0" and hashlib.sha256(
+        template.get("body", "").encode()
+    ).hexdigest() == _LEGACY_BODIES.get(template.get("id")):
+        current = next((t for t in builtins() if t["id"] == template["id"]), None)
+        if current:
+            return current
+    return template
