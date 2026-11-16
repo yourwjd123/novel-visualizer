@@ -244,8 +244,12 @@ class Bridge(QObject):
         elif op == "save_split":
             w.save_split(d["rows"])
         elif op == "confirm_split":
+            if not w.assets_ready():
+                raise ValueError("请先完成本章资产整理")
             w.confirm_split(d["rows"])
         elif op == "review_scenes":
+            if not w.assets_ready():
+                raise ValueError("请先完成本章资产整理")
             w.review_scenes(d["rows"], d.get("ids", []), d.get("status", "候选"))
         elif op == "chapter_action":
             w.chapter_action(d["id"], bool(d.get("restore")))
@@ -255,6 +259,10 @@ class Bridge(QObject):
             )
         elif op == "select_variant":
             w.select_variant(d["id"], d["variant"], d.get("scene"))
+        elif op == "asset_finish":
+            w.finish_assets(d.get("selected", []))
+        elif op == "save_advice":
+            w.save_advice(d.get("text", ""), d.get("items"))
         elif op == "save_summary":
             w.save_summary(d.get("text", ""))
         elif op == "asset_candidate":
@@ -335,6 +343,21 @@ class Bridge(QObject):
             ]
         elif op == "requirements":
             w.require_project()
+            previous = w.project.requirements(w.scene)
+            removed = [
+                r["asset_id"]
+                for r in previous
+                if r.get("auto_asset_link")
+                and r.get("asset_id")
+                and not any(v.get("asset_id") == r["asset_id"] for v in d["rows"])
+            ]
+            exclusions = w.project.config.setdefault(
+                "asset_match_exclusions", {}
+            ).setdefault(w.scene, [])
+            exclusions[:] = list(
+                set(exclusions + removed) - {v.get("asset_id") for v in d["rows"]}
+            )
+            w.project.save_config()
             w.project.set_requirements(w.scene, d["rows"])
         elif op == "scene_override":
             w.require_project()
@@ -611,6 +634,13 @@ class Bridge(QObject):
         w.guard()
         node = self.node(d)
         mode = d.get("mode", "task")
+        if (
+            node == 1
+            and mode == "task"
+            and d.get("asset_phase") == "build"
+            and d.get("selected") is None
+        ):
+            raise ValueError("请先勾选建卡建议")
         if mode == "task" and node not in (0, 1, 7) and not d.get("asset"):
             scene = w.project.scene(w.scene) if w.scene else None
             if not scene or scene.get("review", "已确认") != "已确认":
@@ -638,6 +668,8 @@ class Bridge(QObject):
             fields=d.get("fields"),
             paragraph_range=d.get("paragraph_range"),
             reference=d.get("reference", ""),
+            asset_phase=d.get("asset_phase", "advice"),
+            selected=d.get("selected"),
         )
         job["auto_split_candidates"] = bool(d.get("split"))
 
@@ -986,7 +1018,7 @@ class LocalPage(QWebEnginePage):
 class Desktop(QMainWindow):
     def __init__(self, root):
         super().__init__()
-        self.setWindowTitle("墨境 · 小说文本可视化 · v0.5.1-beta.1 测试版")
+        self.setWindowTitle("墨境 · 小说文本可视化 · v0.6.0-beta.1 测试版")
         self.bridge = Bridge(root, self)
         self.view = QWebEngineView(self)
         page = LocalPage(self.view)

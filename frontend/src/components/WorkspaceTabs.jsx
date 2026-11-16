@@ -1,8 +1,8 @@
 // Adapted from Pagekin StageTabs, SHA 707d157e. GPL-3.0; see THIRD_PARTY_NOTICES.md.
 import React, { useRef } from "react";
 const pages = [
-  ["source", "原文与情节"],
   ["assets", "视觉资产库"],
+  ["source", "原文与情节"],
   ["images", "场景插图"],
   ["results", "成果集"],
 ];

@@ -135,6 +135,8 @@ def main():
                 c.click("账户 / 登录")
                 c.wait("document.querySelector('.account-list button')")
                 c.evaluate("document.querySelector('.account-list button').click()")
+                c.wait("document.querySelector('.workspace-tabs')")
+                c.click("原文与情节", ".workspace-tabs button")
                 c.wait("document.querySelectorAll('.paragraph').length===8")
                 c.evaluate(
                     "document.querySelector('.paragraph-list').style.cssText='height:100px;min-height:0;max-height:100px'"
@@ -200,28 +202,39 @@ def main():
                 c.wait(
                     "document.querySelector('.toast')?.innerText.includes('默认语言配置已保存')"
                 )
+                c.click("提示词管理")
+                c.wait("document.querySelector('[aria-label=\"提示词管理\"]')")
+                c.fill('[aria-label="提示词管理"] select', "advice")
+                c.wait(
+                    "document.querySelector('[aria-label=\"提示词编辑\"]').value.includes('整章')"
+                )
+                c.click("关闭", '[aria-label="提示词管理"] button')
                 c.click("外观", ".settings-tabs button")
                 assert "当前项目补充规则" not in c.evaluate(
                     "document.querySelector('.settings-sheet').innerText"
                 )
                 c.click("视觉资产库", ".workspace-tabs button")
-                c.click("构建本章资产候选", ".page-heading button")
-                c.wait("document.querySelector('.asset-candidates .image-card')", 20)
+                c.click("获取本章建卡建议", ".page-heading button")
+                c.wait("document.querySelector('.advice-row')", 20)
+                c.evaluate(
+                    "document.querySelector('[aria-label=\"收起 AI 助手\"]').click()"
+                )
+                c.evaluate(
+                    "document.querySelector('.advice-row input[type=checkbox]').click()"
+                )
+                c.click("为选中项建立资产卡")
                 c.wait(
-                    "document.querySelector('.assistant-run-status').innerText.includes('资产候选待审核')"
+                    "[...document.querySelectorAll('.asset-grid .image-card h3')].some(e=>e.innerText==='甲')",
+                    20,
                 )
                 c.evaluate(
                     "document.querySelector('[aria-label=\"收起 AI 助手\"]').click()"
                 )
                 c.screenshot(output / "chapter-candidates.png")
-                c.click("编辑候选")
-                c.wait("document.querySelector('.asset-editor')")
-                c.fill(".asset-editor textarea", "候选人工描述")
-                c.fill("select[aria-label='资产等级']", "核心")
-                c.click("保存资产修改", ".asset-editor button")
-                c.wait("!document.querySelector('.asset-editor')")
-                c.click("确认入库")
-                c.wait("!document.querySelector('.asset-candidates')")
+                c.click("完成本章资产整理")
+                c.wait(
+                    "document.querySelector('.asset-workflow').innerText.includes('已完成')"
+                )
                 c.click("原文与情节", ".workspace-tabs button")
                 assert (
                     c.evaluate("document.querySelectorAll('.scene-card').length") == 0
@@ -233,7 +246,7 @@ def main():
                 )
                 c.click("确认全部情节", ".page-heading button")
                 c.wait(
-                    "document.querySelector('.scene-card .tags').innerText.includes('演示资产')"
+                    "document.querySelector('.scene-card .tags').innerText.includes('甲')"
                 )
                 c.evaluate("document.querySelectorAll('.scene-card')[1].click()")
                 c.wait(
@@ -302,10 +315,10 @@ def main():
                 c.wait("document.querySelector('.assistant').hidden")
                 c.click("视觉资产库", ".workspace-tabs button")
                 c.wait(
-                    "[...document.querySelectorAll('.asset-grid .image-card')].some(e=>e.innerText.includes('演示资产'))"
+                    "[...document.querySelectorAll('.asset-grid .image-card')].some(e=>e.innerText.includes('甲'))"
                 )
                 c.evaluate(
-                    "[...document.querySelectorAll('.asset-grid .image-card')].find(e=>e.innerText.includes('演示资产')).querySelector('.image-hit').click()"
+                    "[...document.querySelectorAll('.asset-grid .image-card')].find(e=>e.innerText.includes('甲')).querySelector('.image-hit').click()"
                 )
                 c.wait("document.querySelector('.asset-editor')")
                 before = c.evaluate(
@@ -328,16 +341,16 @@ def main():
                 c.click("保存资产修改", ".asset-editor button")
                 c.wait("!document.querySelector('.asset-editor')")
                 c.evaluate(
-                    "[...document.querySelectorAll('.asset-grid .image-card')].find(e=>e.innerText.includes('演示资产')).querySelectorAll('footer button')[0].click()"
+                    "[...document.querySelectorAll('.asset-grid .image-card')].find(e=>e.innerText.includes('甲')).querySelectorAll('footer button')[0].click()"
                 )
                 c.wait(
-                    "!([...document.querySelectorAll('.asset-grid .image-card')].some(e=>e.innerText.includes('演示资产')))"
+                    "!([...document.querySelectorAll('.asset-grid .image-card')].some(e=>e.innerText.includes('甲')))"
                 )
                 c.click("回收站")
                 c.click("恢复资产")
                 c.click("资产档案")
                 c.wait(
-                    "[...document.querySelectorAll('.asset-grid .image-card')].some(e=>e.innerText.includes('演示资产'))"
+                    "[...document.querySelectorAll('.asset-grid .image-card')].some(e=>e.innerText.includes('甲'))"
                 )
                 c.click("场景插图", ".workspace-tabs button")
                 c.wait("document.querySelector('.shot-toolbar')")

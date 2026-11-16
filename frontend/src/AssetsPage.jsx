@@ -22,13 +22,27 @@ export default function AssetsPage() {
     [gallery, setGallery] = useState([]),
     [trash, setTrash] = useState([]),
     [selected, setSelected] = useState(new Set()),
-    [range, setRange] = useState([1, Math.min(20, s.paragraphs.length)]),
     [sort, setSort] = useState("等级");
-  useEffect(
-    () => setRange([1, Math.min(20, s.paragraphs.length)]),
-    [s.segment],
-  );
-  const levels = ["核心", "重要", "建议", "可选择"];
+  const [adviceOpen, setAdviceOpen] = useState(false);
+  useEffect(() => {
+    if (s.asset_advice?.raw) setAdviceOpen(true);
+  }, [s.segment, s.asset_advice?.raw]);
+  const [adviceSelection, setAdviceSelection] = useState(new Set()),
+    [adviceItems, setAdviceItems] = useState([]),
+    [adviceRaw, setAdviceRaw] = useState("");
+  useEffect(() => {
+    setAdviceItems(s.asset_advice?.items || []);
+    setAdviceRaw(s.asset_advice?.raw || "");
+    setAdviceSelection(
+      (old) =>
+        new Set(
+          [...old].filter((id) =>
+            (s.asset_advice?.items || []).some((i) => i.id === id),
+          ),
+        ),
+    );
+  }, [s.segment, JSON.stringify(s.asset_advice)]);
+  const levels = ["核心", "重要", "建议"];
   const pending = (s.asset_candidates || []).filter(
     (a) =>
       !a.accepted &&
@@ -85,13 +99,12 @@ export default function AssetsPage() {
               onClick={() =>
                 run("send", {
                   node: 1,
-                  paragraph_range: range,
-                  message:
-                    "依据本批章节原文构建资产候选；按出现位置排序，建议当前章节的重要等级。仅输出资产 JSON。",
+                  asset_phase: "advice",
+                  message: "阅读本章，提出简短建卡建议和三级分级。",
                 })
               }
             >
-              构建本章资产候选
+              获取本章建卡建议
             </button>
             <button
               className="primary"
@@ -126,28 +139,8 @@ export default function AssetsPage() {
             ))}
           </select>
         </label>
-        <label>
-          本批起始段
-          <input
-            type="number"
-            min="1"
-            max={s.paragraphs.length}
-            value={range[0]}
-            onChange={(e) => setRange([Number(e.target.value), range[1]])}
-          />
-        </label>
-        <label>
-          结束段
-          <input
-            type="number"
-            min={range[0]}
-            max={s.paragraphs.length}
-            value={range[1]}
-            onChange={(e) => setRange([range[0], Number(e.target.value)])}
-          />
-        </label>
         <span className="small muted">
-          可分批构建，不自动追加调用；不依赖情节拆分。
+          整章阅读 → 勾选建议 → 正式建卡 → 确认整理完成
         </span>
         <label>
           排序
@@ -157,6 +150,187 @@ export default function AssetsPage() {
           </select>
         </label>
       </div>
+      <section className="asset-workflow">
+        <h2>
+          本章资产整理 · {s.asset_ready ? "已完成，可解析情节" : "待完成"}
+        </h2>
+        <p>只建议主要人物、重要道具、重要场景。无图片或未知外观不阻止完成。</p>
+        <div className="actions">
+          <button onClick={() => setAdviceOpen(true)}>
+            查看／编辑建卡建议
+          </button>{" "}
+          <button
+            disabled={s.busy}
+            onClick={() => {
+              if (
+                window.confirm(
+                  "确认本章资产整理完成？未选条目不建卡，也可确认本章无需新增资产。",
+                )
+              )
+                run("asset_finish", { selected: [...adviceSelection] });
+            }}
+          >
+            完成本章资产整理
+          </button>
+        </div>
+        {adviceOpen && (
+          <div className="modal-shade">
+            <section className="modal" role="dialog" aria-label="建卡建议选择">
+              <div className="modal-heading">
+                <h2>第一轮建议 / 勾选后建立资产卡</h2>
+                <button onClick={() => setAdviceOpen(false)}>关闭建议</button>
+              </div>{" "}
+              {s.asset_advice?.raw && (
+                <details>
+                  <summary>第一轮原始建议 / 手工整理</summary>
+                  <textarea
+                    rows={6}
+                    value={adviceRaw}
+                    onChange={(e) => setAdviceRaw(e.target.value)}
+                  />
+                  <button
+                    onClick={() => run("save_advice", { text: adviceRaw })}
+                  >
+                    从逐项文本重新整理建议
+                  </button>
+                </details>
+              )}
+              {adviceItems.map((item, i) => (
+                <div className="advice-row" key={item.id}>
+                  <input
+                    aria-label={"勾选 " + item.name}
+                    type="checkbox"
+                    checked={adviceSelection.has(item.id)}
+                    onChange={(e) =>
+                      setAdviceSelection((v) => {
+                        const n = new Set(v);
+                        e.target.checked ? n.add(item.id) : n.delete(item.id);
+                        return n;
+                      })
+                    }
+                  />
+                  <input
+                    aria-label={"建议名称 " + i}
+                    value={item.name}
+                    onChange={(e) =>
+                      setAdviceItems((v) =>
+                        v.map((a, j) =>
+                          j === i ? { ...a, name: e.target.value } : a,
+                        ),
+                      )
+                    }
+                  />
+                  <select
+                    value={item.kind}
+                    onChange={(e) =>
+                      setAdviceItems((v) =>
+                        v.map((a, j) =>
+                          j === i ? { ...a, kind: e.target.value } : a,
+                        ),
+                      )
+                    }
+                  >
+                    {["人物", "场景", "道具"].map((k) => (
+                      <option key={k}>{k}</option>
+                    ))}
+                  </select>
+                  <select
+                    value={item.priority}
+                    onChange={(e) =>
+                      setAdviceItems((v) =>
+                        v.map((a, j) =>
+                          j === i ? { ...a, priority: e.target.value } : a,
+                        ),
+                      )
+                    }
+                  >
+                    {["核心", "重要", "建议"].map((k) => (
+                      <option key={k}>{k}</option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label={"建卡方式 " + item.name}
+                    value={item.action || "auto"}
+                    onChange={(e) =>
+                      setAdviceItems((v) =>
+                        v.map((a, j) =>
+                          j === i ? { ...a, action: e.target.value } : a,
+                        ),
+                      )
+                    }
+                  >
+                    <option value="auto">新建或关联已有档案</option>
+                    <option value="variant">建立本章状态副卡</option>
+                  </select>
+                  {item.action === "variant" && (
+                    <input
+                      aria-label="副卡标题"
+                      value={item.variant_title || ""}
+                      placeholder="副卡名称"
+                      onChange={(e) =>
+                        setAdviceItems((v) =>
+                          v.map((a, j) =>
+                            j === i
+                              ? { ...a, variant_title: e.target.value }
+                              : a,
+                          ),
+                        )
+                      }
+                    />
+                  )}
+                  <span>{item.reason}</span>
+                  <button
+                    onClick={() =>
+                      setAdviceItems((v) => v.filter((_, j) => j !== i))
+                    }
+                  >
+                    移除建议
+                  </button>
+                </div>
+              ))}
+              <div className="actions">
+                <button
+                  onClick={() =>
+                    setAdviceItems((v) => [
+                      ...v,
+                      {
+                        id: "manual-" + Date.now(),
+                        name: "新资产",
+                        kind: "人物",
+                        priority: "建议",
+                        reason: "用户添加",
+                      },
+                    ])
+                  }
+                >
+                  手工增加建卡建议
+                </button>
+                <button
+                  disabled={s.busy || !adviceSelection.size}
+                  onClick={async () => {
+                    if (
+                      !(await run("save_advice", {
+                        text: adviceRaw,
+                        items: adviceItems,
+                      }))
+                    )
+                      return;
+                    setAdviceOpen(false);
+                    await run("send", {
+                      node: 1,
+                      asset_phase: "build",
+                      selected: [...adviceSelection],
+                      message: "仅为用户勾选项建立简洁档案。",
+                    });
+                  }}
+                >
+                  为选中项建立资产卡
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
+      </section>
       <div className="view-switch" role="group" aria-label="资产视图">
         {[
           ["records", "资产档案"],
@@ -707,6 +881,21 @@ export function AssetEditor({ asset, onClose }) {
           maxLength={100}
         />
       </label>
+      <label>
+        别名（逗号分隔；不建议登记“他、父亲”等泛称）
+        <input
+          value={(form.aliases || []).join(",")}
+          onChange={(e) =>
+            set(
+              "aliases",
+              e.target.value
+                .split(/[,，]/)
+                .map((v) => v.trim())
+                .filter(Boolean),
+            )
+          }
+        />
+      </label>
       <div className="field-pair">
         <label>
           分类
@@ -745,7 +934,7 @@ export function AssetEditor({ asset, onClose }) {
             }
             onChange={(e) => set("priority", e.target.value)}
           >
-            {["核心", "重要", "建议", "可选择"].map((v) => (
+            {["核心", "重要", "建议"].map((v) => (
               <option key={v}>{v}</option>
             ))}
           </select>

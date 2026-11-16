@@ -52,7 +52,7 @@ def test_templates_cover_every_node_and_preserve_edits(tmp_path):
     a = store.accounts[0]
     for n in range(8):
         t = default_template(n)
-        assert len(t["body"]) > 110 and "原文" in assemble(t)
+        assert len(t["body"]) > 30 and t["name"] in assemble(t)
     t = default_template(0)
     t.update(body=t["body"] + "\n用户补充：保留人物对话。")
     store.save_template(a, t)

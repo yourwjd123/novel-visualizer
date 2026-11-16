@@ -44,6 +44,7 @@ DEFAULTS = dict(
     language_temperature=0.5,
     compact_requests=True,
     language_preface="",
+    asset_advice_prompt="",
     completion_guidance="",
     theme="system",
     background="",
@@ -930,6 +931,12 @@ class Project:
         rows = [
             dict(r) for r in self.db.execute("SELECT * FROM segments ORDER BY rowid")
         ]
+        for row in rows:
+            if row.get("priority") == "可选择":
+                row["priority"] = "建议"
+            for value in row.get("chapter_levels", {}).values():
+                if value.get("priority") == "可选择":
+                    value["priority"] = "建议"
         return (
             rows
             if include_archived
@@ -1033,6 +1040,12 @@ class Project:
             json.loads(r[0])
             for r in self.db.execute("SELECT data FROM assets ORDER BY rowid")
         ]
+        for row in rows:
+            if row.get("priority") == "可选择":
+                row["priority"] = "建议"
+            for value in row.get("chapter_levels", {}).values():
+                if value.get("priority") == "可选择":
+                    value["priority"] = "建议"
         return rows if include_archived else [r for r in rows if not r.get("archived")]
 
     def save_asset(self, a):

@@ -73,6 +73,12 @@ def text_call(
 ):
     if params["provider"] == "demo":
         fmt = params.get("template", {}).get("format")
+        if params.get("template", {}).get("id") == "asset_advice":
+            return (
+                "1. "
+                + ("甲" if "[段落 1] 甲" in context else "演示资产")
+                + "｜人物｜建议｜演示条目，请核对原文。"
+            )
         if params.get("template", {}).get("id") == "complete":
             target = json.loads(
                 context.split("【当前编辑对象全文】\n", 1)[1].split(
@@ -121,12 +127,18 @@ def text_call(
                 indent=2,
             )
         if fmt == "assets":
+            demo_name = "演示资产"
+            if "【用户勾选项，仅为这些对象建卡】" in context:
+                chosen = json.loads(
+                    context.split("【用户勾选项，仅为这些对象建卡】\n", 1)[1]
+                )
+                demo_name = chosen[0]["name"]
             return json.dumps(
                 {
                     "note": "演示输出 · 未调用模型；不是原文事实",
                     "assets": [
                         dict(
-                            name="演示资产",
+                            name=demo_name,
                             kind="人物",
                             description="仅用于验证卡片创建，请编辑或使用真实模型解析。",
                             source="AI 建议",

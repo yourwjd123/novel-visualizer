@@ -1815,3 +1815,25 @@ pre {
 .variant-editor select {
   max-width: 100%;
 }
+
+.asset-workflow {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin: 12px 0;
+}
+.advice-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.advice-row input:not([type="checkbox"]) {
+  max-width: 180px;
+}
+.advice-row span {
+  flex: 1;
+  min-width: 120px;
+}

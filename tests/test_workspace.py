@@ -33,6 +33,7 @@ def work(app, tmp_path, monkeypatch):
     p.close()
     w.open_project(path)
     w.import_text("第一段", "甲走进渡口。\n\n乙交给她一封信。\n\n甲转身登船。")
+    w.finish_assets([])
     yield w
     w.close()
 
@@ -588,7 +589,7 @@ def candidate_output():
 def test_chapter_assets_before_plot_candidates_mapping_and_archive(work):
     job, _, _, _ = work.prepare_text(1, "构建章节资产", paragraph_range=[1, 2])
     assert job["scope"] == work.segment
-    assert "甲走进渡口" in job["context"] and "甲转身登船" not in job["context"]
+    assert "甲走进渡口" in job["context"] and "甲转身登船" in job["context"]
     work.process_task_output(job, candidate_output())
     candidate = work.project.config["asset_candidates"][work.segment][0]
     assert candidate["priority"] == "核心"
@@ -599,7 +600,7 @@ def test_chapter_assets_before_plot_candidates_mapping_and_archive(work):
     assert asset["chapter_levels"][work.segment]["priority"] == "核心"
     scenes = work.confirm_split(rows())
     assert work.project.requirements(scenes[0]["id"])[0]["asset_id"] == asset["id"]
-    assert not work.project.requirements(scenes[1]["id"])
+    assert work.project.requirements(scenes[1]["id"])[0]["asset_id"] == asset["id"]
     work.archive_asset(asset["id"])
     assert not work.project.assets()
     assert work.project.scene_assets(scenes[0]["id"])[0]["problem"] == "缺少档案"
@@ -771,9 +772,13 @@ def test_bridge_single_task_generates_visible_candidates_without_plot(work):
     )
     wait(bridge)
     state = work.snapshot()
-    assert not state["scenes"] and len(state["asset_candidates"]) == 1
-    assert not state["assets"]
-    assert state["jobs"][0]["status"] == "success"
+    assert not state["scenes"] and len(state["asset_advice"]["items"]) == 1
+    chosen = [state["asset_advice"]["items"][0]["id"]]
+    bridge.dispatch(
+        "send", dict(node=1, asset_phase="build", selected=chosen, message="建卡")
+    )
+    wait(bridge)
+    assert len(work.snapshot()["assets"]) == 1
 
 
 def test_consultation_wire_contains_only_prefix_summary_and_current_question(
@@ -872,3 +877,106 @@ def test_attachment_upload_always_one_chapter(work):
     )
     assert len(work.project.segments()) == 2
     assert len(work.project.paragraphs(work.segment)) == 300
+
+
+def test_asset_gate_and_local_alias_matching(work):
+    work.project.config["asset_ready"] = {}
+    with pytest.raises(ValueError, match="资产整理"):
+        work.prepare_text(0, "拆分")
+    work.finish_assets([])
+    asset = work.save_asset(
+        dict(
+            name="人物本名",
+            kind="人物",
+            description="测试",
+            aliases=["甲"],
+            review="已确认",
+        )
+    )
+    scenes = work.confirm_split(rows())
+    assert all(
+        work.project.requirements(s["id"])[0]["asset_id"] == asset["id"] for s in scenes
+    )
+    work.paste_chapter("追加", "新内容", work.segment)
+    assert not work.assets_ready()
+
+
+def test_recommendation_build_only_selected_and_evidence_normalization(work):
+    work.save_advice("1. 甲｜人物｜核心｜主要人物\n2. 渡口｜场景｜重要｜地点")
+    items = work.project.config["asset_advice"][work.segment]["items"]
+    job, _, _, _ = work.prepare_text(1, "建卡", selected=[items[0]["id"]])
+    output = json.loads(candidate_output())
+    output["assets"][0]["attributes"][0].pop("evidence_refs")
+    output["assets"][0]["attributes"][0]["evidence"] = {
+        "paragraph": 1,
+        "quote": "甲走进渡口",
+    }
+    work.process_task_output(job, json.dumps(output, ensure_ascii=False))
+    assert len(work.project.assets()) == 1
+    work.finish_assets([items[0]["id"]])
+    with pytest.raises(ValueError, match="尚未"):
+        work.finish_assets([items[1]["id"]])
+
+
+def test_partial_build_keeps_valid_cards_and_blocks_finish(work):
+    work.save_advice("1. 甲｜人物｜核心｜主角\n2. 乙｜人物｜重要｜配角")
+    items = work.project.config["asset_advice"][work.segment]["items"]
+    job, _, _, _ = work.prepare_text(1, "建卡", selected=[i["id"] for i in items])
+    output = json.loads(candidate_output())
+    output["assets"].append(
+        dict(
+            name="乙",
+            kind="人物",
+            description="资料",
+            source="原文明确",
+            evidence=[dict(paragraph=99, quote="不存在")],
+        )
+    )
+    with pytest.raises(ValueError, match="部分建卡"):
+        work.process_task_output(job, json.dumps(output, ensure_ascii=False))
+    assert work.project.assets()[0]["name"] == "甲"
+    with pytest.raises(ValueError, match="尚未"):
+        work.finish_assets([i["id"] for i in items])
+
+
+def test_local_match_ambiguity_and_manual_exclusion(work):
+    a = work.save_asset(dict(name="甲", kind="人物", description="甲", review="已确认"))
+    b = work.save_asset(
+        dict(
+            name="另一人",
+            aliases=["甲"],
+            kind="人物",
+            description="另一人",
+            review="已确认",
+        )
+    )
+    scenes = work.confirm_split(rows())
+    assert not work.project.requirements(scenes[0]["id"])
+    assert work.project.config["asset_match_ambiguities"][scenes[0]["id"]] == ["甲"]
+    work.save_asset(dict(id=b["id"], aliases=[]))
+    assert work.project.requirements(scenes[0]["id"])[0]["asset_id"] == a["id"]
+    bridge = Bridge(work.store.root)
+    bridge.workspace.close()
+    bridge.workspace = work
+    bridge.dispatch("requirements", dict(rows=[]))
+    work.map_assets_to_scenes()
+    assert not work.project.requirements(work.scene)
+
+
+def test_plot_optional_asset_fields_do_not_block(work):
+    job, _, _, _ = work.prepare_text(0, "拆分")
+    text = json.dumps(
+        dict(
+            scenes=[
+                dict(
+                    title="一段",
+                    start_paragraph=1,
+                    end_paragraph=3,
+                    required_assets=["甲"],
+                )
+            ]
+        ),
+        ensure_ascii=False,
+    )
+    work.process_task_output(job, text)
+    assert len(work.project.config["split_drafts"][work.segment]["rows"]) == 1

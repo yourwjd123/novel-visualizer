@@ -2,10 +2,12 @@ import React, { useState, useEffect } from "react";
 import { Plus, X, Save, RotateCcw } from "lucide-react";
 import { useWorkspace, copy, freshId } from "./context";
 import { PageHeading } from "./App";
+import PromptManager from "./PromptManager";
 import { api } from "./api";
 
 export default function SettingsPage() {
   const { s, run, refresh, notify, dirty } = useWorkspace();
+  const [promptManager, setPromptManager] = useState(false);
   const [customKind, setCustomKind] = useState("language");
   const [shared, setShared] = useState({ ...s.settings });
   const [section, setSection] = useState("language"),
@@ -114,7 +116,13 @@ export default function SettingsPage() {
   }
   return (
     <>
+      {promptManager && (
+        <PromptManager onClose={() => setPromptManager(false)} />
+      )}
       <PageHeading
+        actions={
+          <button onClick={() => setPromptManager(true)}>提示词管理</button>
+        }
         title="设置"
         subtitle="语言与图片连接分开配置；账户之间独立保存，密钥不随设置导出。"
       />
@@ -853,7 +861,7 @@ export default function SettingsPage() {
           <div className="separated">
             <h2>测试版本与许可</h2>
             <p className="muted small prose">
-              v0.5.1-beta.1 · GPL-3.0。UI 标签交互与纸墨基础参考
+              v0.6.0-beta.1 · GPL-3.0。UI 标签交互与纸墨基础参考
               Pagekin；视觉资产卡参考 Story Asset
               Studio（MIT）。对应版权和完整许可随源码提供。此应用只做已有文本可视化，不提供小说创作功能。
             </p>

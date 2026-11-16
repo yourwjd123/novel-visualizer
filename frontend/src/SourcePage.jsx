@@ -100,6 +100,10 @@ export default function SourcePage() {
     dirty.current = true;
   }
   async function analyze() {
+    if (!s.asset_ready) {
+      notify("请先完成本章资产整理");
+      return;
+    }
     if (!s.segment) {
       setModal({ type: "import" });
       return;
@@ -216,7 +220,9 @@ export default function SourcePage() {
               导入下一片段
             </button>
             <button
-              disabled={s.busy || !!error || imported || edit !== null}
+              disabled={
+                s.busy || !s.asset_ready || !!error || imported || edit !== null
+              }
               onClick={() =>
                 review(
                   rows.map((r) => r.id),
@@ -249,6 +255,12 @@ export default function SourcePage() {
           ))}
         </details>
       )}
+      {!s.asset_ready && (
+        <div className="notice warning">
+          先完成本章资产整理，再开始情节解析。
+          <button onClick={() => navigate("assets")}>前往资产整理</button>
+        </div>
+      )}
       <div className="source-toolbar">
         <label className="inline-label">
           当前片段
@@ -276,12 +288,12 @@ export default function SourcePage() {
           </select>
         </label>
         <span className="spacer" />
-        <button disabled={s.busy} onClick={analyze}>
+        <button disabled={s.busy || !s.asset_ready} onClick={analyze}>
           {imported ? "分析并生成候选" : "重新生成候选"}
         </button>
         <button
           className="quiet"
-          disabled={s.busy}
+          disabled={s.busy || !s.asset_ready}
           onClick={() => {
             const next = [
               {
@@ -492,7 +504,11 @@ export default function SourcePage() {
               title="先把原文整理成情节卡"
               text="选择拆分深度后发起分析；模型输出先经过检查，也可手工整理。"
               action={
-                <button className="primary" disabled={s.busy} onClick={analyze}>
+                <button
+                  className="primary"
+                  disabled={s.busy || !s.asset_ready}
+                  onClick={analyze}
+                >
                   分析此片段
                 </button>
               }
@@ -644,6 +660,12 @@ export default function SourcePage() {
                         <small>建议可视化瞬间</small>
                         <p>{row.visual_moment || "待用户确定"}</p>
                       </div>
+                      {row.match_ambiguities?.length > 0 && (
+                        <p className="notice warning">
+                          同名或别名冲突，需人工关联：
+                          {row.match_ambiguities.join("、")}
+                        </p>
+                      )}
                       <div className="tags">
                         {(row.required_assets || []).map((a, n) => (
                           <button

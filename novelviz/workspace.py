@@ -211,9 +211,10 @@ class Workspace(TaskMixin):
         result["templates"] = self.store.templates(self.account)
         result["defaults"] = self.store.node_defaults(self.account)
         result["image_settings"] = self.store.image_defaults(self.account)
-        from .tasks import COMPLETION_GUIDANCE
+        from .tasks import COMPLETION_GUIDANCE, ASSET_ADVICE_DEFAULT
 
         result["completion_guidance_default"] = COMPLETION_GUIDANCE
+        result["asset_advice_default"] = ASSET_ADVICE_DEFAULT
         if settings.get("background"):
             from PySide6.QtGui import QImage
 
@@ -235,6 +236,10 @@ class Workspace(TaskMixin):
             project=p.meta,
             progress=p.progress(),
             segments=p.segments(),
+            asset_ready=self.assets_ready() if self.segment else False,
+            asset_advice=copy.deepcopy(
+                p.config.get("asset_advice", {}).get(self.segment, {})
+            ),
             chapter_variant_choices=p.config.get("chapter_variant_selections", {}).get(
                 self.segment, {}
             ),
@@ -263,7 +268,13 @@ class Workspace(TaskMixin):
         if self.segment:
             result["paragraphs"] = p.paragraphs(self.segment)
             result["scenes"] = [
-                dict(scene, required_assets=p.requirements(scene["id"]))
+                dict(
+                    scene,
+                    required_assets=p.requirements(scene["id"]),
+                    match_ambiguities=p.config.get("asset_match_ambiguities", {}).get(
+                        scene["id"], []
+                    ),
+                )
                 for scene in p.scenes(self.segment)
             ]
         for a in p.assets():
@@ -478,6 +489,7 @@ class Workspace(TaskMixin):
             "evidence",
             "missing",
             "notes",
+            "aliases",
             "priority",
             "priority_reason",
             "appearances",
@@ -496,7 +508,14 @@ class Workspace(TaskMixin):
                 priority=record["priority"],
                 reason=record.get("priority_reason", "用户设定"),
             )
-        return self.project.save_asset(record)
+        if not isinstance(record.get("aliases", []), list) or any(
+            not isinstance(a, str) for a in record.get("aliases", [])
+        ):
+            raise ValueError("别名必须为文本数组")
+        saved = self.project.save_asset(record)
+        if self.segment:
+            self.map_assets_to_scenes()
+        return saved
 
     def add_reference(self, asset_id, path):
         self.require_project()

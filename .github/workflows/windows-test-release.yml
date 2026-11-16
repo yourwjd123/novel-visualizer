@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Beta release tag, e.g. v0.5.1-beta.1'
+        description: 'Beta release tag, e.g. v0.6.0-beta.1'
         required: true
-        default: 'v0.5.1-beta.1'
+        default: 'v0.6.0-beta.1'
       publish:
         description: 'Publish beta Release after successful build'
         type: boolean

@@ -174,7 +174,7 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
             ? "咨询回复已保存"
             : job.mode === "complete"
               ? "补全建议待采用"
-              : `任务完成 · ${job.result_count ?? ""}${job.node === 1 ? " 项资产候选待审核" : job.node === 0 ? " 个情节候选待确认" : "结果待确认"}`
+              : `任务完成 · ${job.result_count ?? ""}${job.node === 1 ? (job.asset_phase === "advice" ? " 项建卡建议待勾选" : " 项资产卡已建立，内容待核对") : job.node === 0 ? " 个情节候选待确认" : "结果待确认"}`
           : job?.status === "failed"
             ? "任务失败"
             : job?.status === "unknown"

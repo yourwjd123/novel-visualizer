@@ -26,7 +26,7 @@ import Assistant from "./Assistant";
 export default function App() {
   const [s, setState] = useState(null),
     [error, setError] = useState(""),
-    [page, setPage] = useState("source"),
+    [page, setPage] = useState("assets"),
     [modal, setModal] = useState(null),
     [ai, setAI] = useState({ open: false, node: 0, asset: null }),
     [toast, setToast] = useState(""),
@@ -111,7 +111,9 @@ export default function App() {
                 notify("AI补全建议已生成，请逐项审核采用");
               else if (job?.node === 1)
                 notify(
-                  `已生成 ${job.result_count ?? 0} 项本章资产候选，请到视觉资产库审核`,
+                  job.asset_phase === "advice"
+                    ? `已生成 ${job.result_count ?? 0} 项建卡建议，请勾选`
+                    : `已建立 ${job.result_count ?? 0} 项资产卡，请核对并完成本章整理`,
                 );
               else if (job?.node === 0)
                 notify("情节候选与本章梗概已生成，请核对");
@@ -438,7 +440,7 @@ export default function App() {
             </button>
             <div className="sidebar-spacer" />
             <p className="side-label sidebar-note">
-              v0.5.1-beta.1 · 测试版
+              v0.6.0-beta.1 · 测试版
               <br />
               既有文本 → 视觉资产 → 插图
             </p>
