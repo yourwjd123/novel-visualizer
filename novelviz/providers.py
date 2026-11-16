@@ -105,6 +105,12 @@ def text_call(
 
             numbers = [int(x) for x in re.findall(r"\[段落 (\d+)\]", context)]
             count = max(numbers, default=1)
+            index = (
+                json.loads(context.split("【可用资产索引，仅关联不建卡】\n", 1)[1])
+                if "【可用资产索引，仅关联不建卡】\n" in context
+                else []
+            )
+            source = context.split("【可用资产索引，仅关联不建卡】", 1)[0]
             return json.dumps(
                 {
                     "note": "演示输出 · 未调用模型；仅供测试拆分审核",
@@ -116,6 +122,14 @@ def text_call(
                             start_paragraph=i,
                             end_paragraph=i,
                             required_assets=[],
+                            asset_ids=[
+                                a["id"]
+                                for a in index
+                                if a["name"]
+                                in source.split(f"[段落 {i}]", 1)[-1].split("[段落", 1)[
+                                    0
+                                ]
+                            ],
                             visual_moment="待用户确认",
                             rationale="演示按段落划分",
                             questions=[],

@@ -101,6 +101,7 @@ class CDP:
 def main():
     output = Path(os.environ.get("NOVELVIZ_E2E_OUTPUT", str(ROOT / "build/e2e")))
     output.mkdir(parents=True, exist_ok=True)
+    (output / "result.json").unlink(missing_ok=True)
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -177,11 +178,15 @@ def main():
                     "document.querySelector('.result-grid .image-hit img')?.naturalWidth>0"
                 )
                 c.screenshot(output / "images.png")
+                external_png = c.evaluate(
+                    "document.querySelector('.result-grid .image-hit img').src"
+                )
                 c.click("选为成果")
                 c.click("成果集", ".workspace-tabs button")
                 c.wait("document.querySelector('.result-grid .image-hit img')")
                 c.click("原文与情节", ".workspace-tabs button")
-                c.click("导入下一片段")
+                c.click("视觉资产库", ".workspace-tabs button")
+                c.click("粘贴原文")
                 c.wait("document.querySelector('.modal textarea')")
                 c.fill(".modal form input", "独立章节测试")
                 c.fill(
@@ -191,6 +196,13 @@ def main():
                 c.click("保留为原文片段", ".modal button")
                 c.wait("document.querySelector('[aria-label=\"粘贴文本归属\"]')")
                 c.click("确认章节归属")
+                c.wait("document.querySelector('[aria-label=\"导入字数与用量预估\"]')")
+                c.screenshot(output / "import-estimate.png")
+                assert "不含输出" in c.evaluate(
+                    "document.querySelector('[aria-label=\"导入字数与用量预估\"]').innerText"
+                )
+                c.click("关闭用量提示")
+                c.click("原文与情节", ".workspace-tabs button")
                 c.wait("document.querySelectorAll('.paragraph').length===3")
                 assert (
                     c.evaluate("document.querySelectorAll('.scene-card').length") == 0
@@ -237,13 +249,13 @@ def main():
                     "document.querySelector('.asset-workflow').innerText.includes('已完成')"
                 )
                 c.evaluate("document.querySelector('.asset-grid .image-check').click()")
-                c.click("批量设为已锁定")
+                c.fill('[aria-label="批量资产状态"]', "已锁定")
                 c.wait(
-                    "document.querySelector('.asset-grid .image-card').innerText.includes('已锁定')"
+                    "document.querySelector('.asset-grid .asset-status').value==='已锁定' "
                 )
-                c.click("批量设为已确认")
+                c.fill('[aria-label="批量资产状态"]', "已确认")
                 c.wait(
-                    "document.querySelector('.asset-grid .image-card').innerText.includes('已确认')"
+                    "document.querySelector('.asset-grid .asset-status').value==='已确认' "
                 )
                 c.click("原文与情节", ".workspace-tabs button")
                 assert (
@@ -379,9 +391,15 @@ def main():
                 )
                 c.click("保存生图方案", ".render-editor button")
                 c.click("保存生图资产到本地", ".render-editor button")
+                c.wait("document.querySelector('[aria-label=\"保存生图素材方式\"]')")
+                c.click("另存为新版本（默认）")
                 c.wait(
                     "[...document.querySelectorAll('.render-editor button')].some(b=>b.textContent==='打开素材文件夹')"
                 )
+                c.click("保存生图资产到本地", ".render-editor button")
+                c.wait("document.querySelector('[aria-label=\"保存生图素材方式\"]')")
+                c.click("覆盖所选版本")
+                c.wait("!document.querySelector('[aria-label=\"保存生图素材方式\"]')")
                 c.click("生成生图方案", ".render-editor button")
                 c.wait("document.querySelector('.render-proposal pre')", 20)
                 c.evaluate(
@@ -393,18 +411,60 @@ def main():
                 )
                 c.click("保存生图方案", ".render-editor button")
                 c.screenshot(output / "images.png")
+                c.evaluate(
+                    "(()=>{const bytes=Uint8Array.from(atob("
+                    + json.dumps(external_png.split(",")[1])
+                    + "),c=>c.charCodeAt(0));const files=new DataTransfer();files.items.add(new File([bytes],'外部生成.png',{type:'image/png'}));document.querySelector('.drop-zone').dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:files}));})()"
+                )
+                c.wait(
+                    "document.querySelector('.result-grid').innerText.includes('用户导入')"
+                )
+                c.click("移除候选", ".result-grid button")
+                c.wait("!document.querySelector('.result-grid .image-card')")
+                c.evaluate(
+                    "[...document.querySelectorAll('details summary')].find(e=>e.textContent.startsWith('已移除候选')).click()"
+                )
+                c.click("恢复候选")
+                c.wait("document.querySelector('.result-grid .image-card')")
+                c.click("选为成果", ".result-grid button")
+                c.screenshot(output / "external-candidates.png")
                 c.click("资产图制作", ".workspace-tabs button")
-                c.wait("document.querySelector('[aria-label=\"资产图方案工作区\"]')")
+                c.wait(
+                    "document.querySelector('[aria-label=\"资产图方案工作区\"] textarea')"
+                )
+                assetid = c.evaluate(
+                    "[...document.querySelector('[aria-label=\"当前制图资产\"]').options].find(o=>o.text==='甲').value"
+                )
+                c.fill('[aria-label="当前制图资产"]', assetid)
+                c.wait(
+                    "document.querySelector('[aria-label=\"拟生图名称\"]')?.value.includes('甲')"
+                )
                 c.fill(
                     ".render-editor textarea", "甲的角色设定图，正面站姿，纯色背景。"
                 )
                 c.click("保存生图资产到本地", ".render-editor button")
+                c.wait("document.querySelector('[aria-label=\"保存生图素材方式\"]')")
+                c.click("另存为新版本（默认）")
                 c.wait(
                     "[...document.querySelectorAll('.render-editor button')].some(b=>b.textContent==='打开素材文件夹')"
                 )
                 c.screenshot(output / "asset-images.png")
                 c.click("设置", ".system-sidebar button")
                 c.wait("document.querySelector('.settings-sheet select')")
+                c.click("AI 选项", ".settings-tabs button")
+                c.wait("document.querySelector('[aria-label=\"资产关联方式\"]')")
+                assert (
+                    c.evaluate(
+                        "document.querySelector('[aria-label=\"资产关联方式\"]').value"
+                    )
+                    == "ai"
+                )
+                c.fill('[aria-label="资产关联方式"]', "local")
+                c.wait(
+                    "document.querySelector('[aria-label=\"资产关联方式\"]').value==='local'"
+                )
+                c.fill('[aria-label="资产关联方式"]', "ai")
+                c.screenshot(output / "ai-options.png")
                 c.click("自定义节点接口", ".settings-tabs button")
                 c.wait("document.querySelector('.settings-sheet textarea')")
                 c.fill(".settings-sheet input[type=number]", "1234")
@@ -431,7 +491,7 @@ def main():
                         )
                 c.click("成果集", ".workspace-tabs button")
                 c.wait(
-                    "document.querySelectorAll('.result-grid .image-card').length===1"
+                    "document.querySelectorAll('.result-grid .image-card').length===2"
                 )
                 for width, scale in [
                     (1920, 1),

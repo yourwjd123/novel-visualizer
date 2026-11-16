@@ -38,8 +38,8 @@ export default function SourcePage() {
       copy(draft?.rows || s.scenes || []).map((r) => ({
         ...r,
         required_assets:
-          s.scenes.find((v) => v.id === r.id)?.required_assets ||
           r.required_assets ||
+          s.scenes.find((v) => v.id === r.id)?.required_assets ||
           [],
         id: r.id || freshId(),
         review: r.review || (draft ? "候选" : "已确认"),
@@ -57,8 +57,8 @@ export default function SourcePage() {
         copy(draft?.rows || s.scenes || []).map((r) => ({
           ...r,
           required_assets:
-            s.scenes.find((v) => v.id === r.id)?.required_assets ||
             r.required_assets ||
+            s.scenes.find((v) => v.id === r.id)?.required_assets ||
             [],
           id: r.id || freshId(),
           review: r.review || (draft ? "候选" : "已确认"),
@@ -113,7 +113,7 @@ export default function SourcePage() {
       return;
     }
     if (!s.segment) {
-      setModal({ type: "import" });
+      navigate("assets");
       return;
     }
     if (
@@ -180,38 +180,12 @@ export default function SourcePage() {
   if (!s.segment)
     return (
       <>
-        <PageHeading
-          title="原文与情节"
-          subtitle="导入已有文本，保留原文件，再整理需要可视化的情节。"
-          actions={
-            <button
-              className="primary"
-              onClick={() => setModal({ type: "import" })}
-            >
-              导入原文
-            </button>
-          }
-        />
-        {(s.archived_chapters || []).map((ch) => (
-          <button
-            key={ch.id}
-            onClick={() => run("chapter_action", { id: ch.id, restore: true })}
-          >
-            恢复章节：{ch.name}
-          </button>
-        ))}
-        <DropZone
-          onFiles={(files) => uploadFiles(files, "text")}
-          accept=".txt,.md,.docx,.epub"
-          label="拖入第一段原文，或点击选择文件"
-        />
+        <PageHeading title="原文与情节" subtitle="对照原文，拆分和编辑情节。" />
         <Empty
-          title="先导入原文片段"
-          text="支持分多次上传。导入本身不调用模型；也可以完全手工拆分。"
+          title="尚未导入章节"
+          text="请先在视觉资产库导入原文并完成资产整理。"
           action={
-            <button onClick={() => setModal({ type: "import" })}>
-              粘贴原文
-            </button>
+            <button onClick={() => navigate("assets")}>前往视觉资产库</button>
           }
         />
       </>
@@ -223,10 +197,6 @@ export default function SourcePage() {
         subtitle="保留原文，整理需要可视化的情节与关键瞬间。"
         actions={
           <>
-            <button onClick={() => setModal({ type: "import" })}>
-              <Plus size={15} />
-              导入下一片段
-            </button>
             <button
               disabled={
                 s.busy || !s.asset_ready || !!error || imported || edit !== null
@@ -674,6 +644,9 @@ export default function SourcePage() {
                           {row.match_ambiguities.join("、")}
                         </p>
                       )}
+                      {row.association_note && (
+                        <p className="notice warning">{row.association_note}</p>
+                      )}
                       <div className="plot-assets">
                         <small>关联资产（关联不等于实际出镜）</small>
                         {(row.required_assets || []).map((a, n) => {
@@ -732,6 +705,9 @@ export default function SourcePage() {
                                 </select>
                               )}
                               <button
+                                disabled={
+                                  !s.scenes.some((v) => v.id === row.id)
+                                }
                                 onClick={() =>
                                   run("scene_assets_edit", {
                                     scene: row.id,

@@ -39,6 +39,7 @@ DIRS = [
     "08_项目数据",
 ]
 DEFAULTS = dict(
+    asset_association_mode="ai",
     language_connection_id="",
     language_max_tokens=10000,
     language_temperature=0.5,
@@ -127,6 +128,8 @@ def clean_settings(data):
             and math.isfinite(data[k])
         ):
             out[k] = float(data[k])
+    if out["asset_association_mode"] not in ("ai", "local", "manual"):
+        out["asset_association_mode"] = "ai"
     if out["theme"] not in ("light", "dark", "system"):
         out["theme"] = "light"
     if out["provider"] not in ("demo", "openai"):
@@ -223,6 +226,8 @@ class Store:
         )
 
     def save_settings(self, a, s):
+        if s.get("asset_association_mode", "ai") not in ("ai", "local", "manual"):
+            raise ValueError("资产关联模式无效")
         write_json(self.account_dir(a) / "账户设置/settings.json", clean_settings(s))
 
     def export_settings(self, a, path, secrets=()):

@@ -131,6 +131,7 @@ export default function SettingsPage() {
           ["language", "语言模型配置"],
           ["image", "生图模型配置"],
           ["custom", "自定义节点接口"],
+          ["ai_options", "AI 选项"],
           ["appearance", "外观"],
           ["transfer", "导入与导出"],
         ].map(([id, label]) => (
@@ -148,6 +149,32 @@ export default function SettingsPage() {
           </button>
         ))}
       </div>
+      {section === "ai_options" && (
+        <section className="settings-sheet">
+          <h2>情节与资产关联</h2>
+          <label>
+            关联方式
+            <select
+              aria-label="资产关联方式"
+              value={s.settings.asset_association_mode || "ai"}
+              onChange={(e) =>
+                run("settings", { asset_association_mode: e.target.value })
+              }
+            >
+              <option value="ai">AI 关联（默认，与情节拆分同次调用）</option>
+              <option value="local">本地名称／别名匹配</option>
+              <option value="manual">仅手工关联</option>
+            </select>
+          </label>
+          <p>
+            AI
+            使用简短资产索引识别第一人称、代词和间接称谓，不新建资产；不确定可留空。修改对后续操作生效，不会自动重跑旧章节。手工增删关联保留；关联不等于必须出镜。
+          </p>
+          <p className="muted">
+            本地匹配不调用模型，但无法判断代词含义。可在情节卡中随时手动修正。
+          </p>
+        </section>
+      )}
       {section === "language" && (
         <section className="settings-sheet">
           <h2>默认大语言模型</h2>
@@ -861,7 +888,7 @@ export default function SettingsPage() {
           <div className="separated">
             <h2>测试版本与许可</h2>
             <p className="muted small prose">
-              v0.7.0-beta.1 · GPL-3.0。UI 标签交互与纸墨基础参考
+              v0.8.0-beta.1 · GPL-3.0。UI 标签交互与纸墨基础参考
               Pagekin；视觉资产卡参考 Story Asset
               Studio（MIT）。对应版权和完整许可随源码提供。此应用只做已有文本可视化，不提供小说创作功能。
             </p>

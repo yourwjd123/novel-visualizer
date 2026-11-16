@@ -11,13 +11,14 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { useWorkspace } from "./context";
-import { PageHeading, Empty } from "./App";
+import { PageHeading, Empty, DropZone } from "./App";
 import ImageCard from "./components/ImageCard";
 import { api } from "./api";
 
 import { RenderEditor } from "./RenderWorkspace";
 export default function ImagesPage() {
-  const { s, run, navigate, setAssetEdit, setLarge, dirty } = useWorkspace();
+  const { s, run, navigate, setAssetEdit, setLarge, dirty, uploadFiles } =
+    useWorkspace();
   const scene = s.scenes.find((v) => v.id === s.scene);
   if (!scene)
     return (
@@ -118,20 +119,53 @@ export default function ImagesPage() {
         ))}
       </div>
       <h2>插图候选</h2>
+      <DropZone
+        compact
+        accept=".png,.jpg,.jpeg,.webp"
+        label="上传或拖入外部生成的场景插图，先存为当前情节候选"
+        onFiles={(files) => uploadFiles(files, "scene_image")}
+      />
       <div className="result-grid">
-        {pictures.map((p) => (
-          <ImageCard
-            key={p.path}
-            image={p.thumbnail}
-            title={scene.title}
-            onOpen={() => setLarge({ path: p.path, title: scene.title })}
-          >
-            <button onClick={() => run("choose_result", { path: p.path })}>
-              选为成果
-            </button>
-          </ImageCard>
-        ))}
+        {pictures
+          .filter((p) => !p.hidden)
+          .map((p) => (
+            <ImageCard
+              key={p.path}
+              image={p.thumbnail}
+              title={scene.title}
+              onOpen={() => setLarge({ path: p.path, title: scene.title })}
+            >
+              {p.job.source === "用户导入" && (
+                <span className="badge">用户导入</span>
+              )}
+              <button onClick={() => run("choose_result", { path: p.path })}>
+                选为成果
+              </button>
+              <button onClick={() => run("scene_candidate", { path: p.path })}>
+                移除候选
+              </button>
+            </ImageCard>
+          ))}
       </div>
+      {pictures.some((p) => p.hidden) && (
+        <details>
+          <summary>已移除候选（原文件与已确认成果保留）</summary>
+          {pictures
+            .filter((p) => p.hidden)
+            .map((p) => (
+              <p key={p.path}>
+                {p.job.original_name || "插图候选"}
+                <button
+                  onClick={() =>
+                    run("scene_candidate", { path: p.path, restore: true })
+                  }
+                >
+                  恢复候选
+                </button>
+              </p>
+            ))}
+        </details>
+      )}
     </>
   );
 }

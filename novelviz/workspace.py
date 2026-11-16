@@ -13,6 +13,7 @@ import json
 import shutil
 from pathlib import Path
 
+from .importing import ImportMixin
 from .tasks import TaskMixin
 from .rendering import RenderMixin, visual_text
 from . import credentials
@@ -28,7 +29,7 @@ from .prompts import (
 from .storage import DEFAULTS, NODES, Project, Store, now, redact, safe_name, uid
 
 
-class Workspace(RenderMixin, TaskMixin):
+class Workspace(ImportMixin, RenderMixin, TaskMixin):
     def __init__(self, root):
         self.store = Store(root, create_default=False)
         self.account = None
@@ -330,7 +331,11 @@ class Workspace(RenderMixin, TaskMixin):
                 "connection", {}
             ).get("model", "")
             record["pictures"] = [
-                dict(path=f, thumbnail=self.image(f))
+                dict(
+                    path=f,
+                    thumbnail=self.image(f),
+                    hidden=f in p.config.get("hidden_scene_candidates", []),
+                )
                 for f in j.get("results", [])
                 if self.file(f).exists()
             ]
@@ -439,6 +444,10 @@ class Workspace(RenderMixin, TaskMixin):
             if old and old["segment"] != self.segment:
                 raise ValueError("情节不属于当前片段")
             if row["review"] == "已确认" or old:
+                if row.get("association_exclusions"):
+                    self.project.config.setdefault("asset_match_exclusions", {})[
+                        row["id"]
+                    ] = row["association_exclusions"]
                 data = dict(row, segment=self.segment, archived=False)
                 if old and data.get("required_assets") == self.project.requirements(
                     row["id"]
@@ -791,7 +800,12 @@ class Workspace(RenderMixin, TaskMixin):
                                 "selected_variant",
                             )
                         }
-                        item["asset"]["description"] = visual_text(effective)
+                        item["asset"]["description"] = (
+                            "参照实际参考图，不使用外观文字"
+                            if effective.get("image")
+                            and self.file(effective["image"]).is_file()
+                            else visual_text(effective)
+                        )
                     item["asset"] = {
                         k: v
                         for k, v in item["asset"].items()
@@ -819,10 +833,13 @@ class Workspace(RenderMixin, TaskMixin):
                     if a["name"] in names or a["name"] in text
                 ]
                 text += "\n【相关已有资产索引】" + json.dumps(index, ensure_ascii=False)
-            text += "\n【本情节资产状态】" + json.dumps(
-                self.project.config.get("scene_overrides", {}).get(self.scene, {}),
-                ensure_ascii=False,
+            overrides = self.project.config.get("scene_overrides", {}).get(
+                self.scene, {}
             )
+            if node == 2:
+                referenced = {r["asset_id"] for r in self.render_state()["references"]}
+                overrides = {k: v for k, v in overrides.items() if k not in referenced}
+            text += "\n【本情节资产状态】" + json.dumps(overrides, ensure_ascii=False)
             for n in {1: (), 2: (), 3: (2,), 4: (2, 3), 6: (2, 3), 7: ()}.get(node, ()):
                 if n == node:
                     continue

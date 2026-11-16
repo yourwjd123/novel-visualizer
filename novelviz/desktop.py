@@ -232,6 +232,7 @@ class Bridge(QObject):
             w.paste_chapter(
                 d["name"], d["text"], d.get("target"), bool(d.get("prepend"))
             )
+            return dict(import_estimate=w.import_report(d["text"]))
         elif op == "upload":
             return self.upload(d)
         elif op == "import_file":
@@ -240,7 +241,9 @@ class Bridge(QObject):
                 self.host, "导入原文", "", "文本 (*.txt *.md *.docx *.epub)"
             )
             if path:
-                w.import_text(Path(path).stem, read_document(path), path)
+                text = read_document(path)
+                w.import_text(Path(path).stem, text, path)
+                return dict(import_estimate=w.import_report(text))
         elif op == "save_split":
             w.save_split(d["rows"])
         elif op == "confirm_split":
@@ -278,9 +281,18 @@ class Bridge(QObject):
         elif op == "render_preview":
             bundle = w.render_bundle(d["text"], d.get("asset"), d.get("scene"))
             return dict(text=bundle["text"], references=bundle["references"])
+        elif op == "render_export_options":
+            return w.render_export_options(
+                d.get("name", ""), d.get("asset"), d.get("scene")
+            )
         elif op == "export_render":
             return w.export_render_bundle(
-                d["text"], d.get("name", ""), d.get("asset"), d.get("scene")
+                d["text"],
+                d.get("name", ""),
+                d.get("asset"),
+                d.get("scene"),
+                d.get("mode", "new"),
+                d.get("version"),
             )
         elif op == "scene_assets_edit":
             w.guard()
@@ -309,6 +321,7 @@ class Bridge(QObject):
                         dict(name=asset["name"], kind=asset["kind"], asset_id=identity)
                     )
             w.project.set_requirements(d["scene"], existing)
+            w.sync_scene_link_draft(d["scene"])
             w.project.save_config()
         elif op == "scene_cast":
             w.guard()
@@ -455,6 +468,8 @@ class Bridge(QObject):
         elif op == "stop":
             if self.worker and self.worker.isRunning():
                 self.worker.cancel.set()
+        elif op == "scene_candidate":
+            w.scene_candidate(d["path"], bool(d.get("restore")))
         elif op == "choose_result":
             w.select_result(d["path"], d.get("scene"))
         elif op == "candidate_to_reference":
@@ -665,7 +680,7 @@ class Bridge(QObject):
             (".txt", ".md", ".docx", ".epub")
             if target == "text"
             else (".png", ".jpg", ".jpeg", ".webp")
-            if target == "reference"
+            if target in ("reference", "scene_image")
             else (".txt", ".md", ".docx", ".epub", ".png", ".jpg", ".jpeg", ".webp")
         )
         if ext not in permitted:
@@ -674,7 +689,14 @@ class Bridge(QObject):
         dest.write_bytes(raw)
         if target == "text":
             try:
-                w.import_text(Path(name).stem, read_document(dest), dest)
+                text = read_document(dest)
+                w.import_text(Path(name).stem, text, dest)
+                return dict(import_estimate=w.import_report(text))
+            finally:
+                dest.unlink(missing_ok=True)
+        elif target == "scene_image":
+            try:
+                return w.import_scene_image(dest, name)
             finally:
                 dest.unlink(missing_ok=True)
         elif target == "reference":
@@ -701,7 +723,7 @@ class Bridge(QObject):
         size = sum(p.stat().st_size for p in paths)
         return self.confirm(
             "确认本次附件",
-            f"将发送 {len(paths)} 个附件，原始大小约 {size / 1024**2:.2f} MB（编码后可能更大）。\n目标：{params.get('endpoint', '')}\n\n附件包括当前请求使用的历史附件。继续吗？",
+            f"将发送 {len(paths)} 个附件，原始大小约 {size / 1024**2:.2f} MB（编码后可能更大）。\n目标：{params.get('endpoint', '')}\n\n附件清单仅涵盖本次实际发送的文件。继续吗？",
         )
 
     def send(self, d):
@@ -838,13 +860,12 @@ class Bridge(QObject):
                     refs.append((field, w.file(ref["path"])))
                 else:
                     unmapped.append(ref["name"])
-            if unmapped and not self.confirm(
-                "参考图未映射",
-                "这些图片不会上传："
-                + "、".join(unmapped)
-                + "。继续仅使用文字和已映射图片吗？",
-            ):
-                return dict(cancelled=True)
+            if unmapped:
+                raise ValueError(
+                    "参考图专用输入缺少ComfyUI映射："
+                    + "、".join(unmapped)
+                    + "；请完成reference_N映射后再生成"
+                )
             values = dict(prompt=prompt, seed=int(config.get("seed", 42)))
             bind_workflow(
                 flow, mapping, dict(values, **{f: "pending.png" for f, _ in refs})
@@ -871,11 +892,17 @@ class Bridge(QObject):
                     profile["endpoint"], bound, dest, cancel, progress, key
                 )
         else:
-            if bundle["references"] and not self.confirm(
-                "兼容接口能力",
-                "当前兼容图片接口只支持文生图，不会发送参考图。是否接受后继续？",
-            ):
-                return dict(cancelled=True)
+            if bundle["references"]:
+                if not self.confirm(
+                    "兼容接口能力",
+                    "当前接口只支持文生图，无法发送参考图。是否明确同意本次改用资产视觉文字描述？否则请使用支持参考图的接口。",
+                ):
+                    return dict(cancelled=True)
+                bundle = w.render_bundle(
+                    plan, asset["id"] if asset else None, text_fallback=True
+                )
+                prompt = bundle["text"]
+                job.update(prompt=prompt, references=[], reference_fallback=True)
             size = config.get("size", "1024x1024")
             job["size"] = size
 
@@ -1045,7 +1072,7 @@ class LocalPage(QWebEnginePage):
 class Desktop(QMainWindow):
     def __init__(self, root):
         super().__init__()
-        self.setWindowTitle("墨境 · 小说文本可视化 · v0.7.0-beta.1 测试版")
+        self.setWindowTitle("墨境 · 小说文本可视化 · v0.8.0-beta.1 测试版")
         self.bridge = Bridge(root, self)
         self.view = QWebEngineView(self)
         page = LocalPage(self.view)

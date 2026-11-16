@@ -37,7 +37,8 @@ export default function App() {
     [assetEdit, setAssetEdit] = useState(null),
     [large, setLarge] = useState(null),
     [assetForRender, setAssetForRender] = useState(null),
-    [guestDark, setGuestDark] = useState(null);
+    [guestDark, setGuestDark] = useState(null),
+    [importReports, setImportReports] = useState([]);
   const current = useRef(s),
     pending = useRef(null),
     assistant = useRef(null),
@@ -81,6 +82,8 @@ export default function App() {
       )
         await assistant.current?.flush();
       const r = await api(op, data);
+      if (r?.import_estimate)
+        setImportReports((v) => [...v, r.import_estimate]);
       if (r?.job) setAI((v) => ({ ...v, job: r.job }));
       if (reload) await refresh();
       return r ?? true;
@@ -130,6 +133,7 @@ export default function App() {
       alive = false;
     };
   }, []);
+  useEffect(() => setImportReports([]), [s?.account?.id, s?.project?.id]);
   async function resume() {
     const next = await refresh();
     if (!next.project) {
@@ -225,14 +229,20 @@ export default function App() {
   }
   async function uploadFiles(files, target, asset) {
     try {
-      for (const file of files) await upload(file, target, asset);
+      for (const file of files) {
+        const result = await upload(file, target, asset);
+        if (result?.import_estimate)
+          setImportReports((v) => [...v, result.import_estimate]);
+      }
       await refresh();
       notify(
         target === "text"
           ? "原文已导入；尚未调用模型"
           : target === "reference"
             ? "参考图已保存"
-            : "附件已保存到项目",
+            : target === "scene_image"
+              ? "已导入为当前情节的插图候选，确认后进入成果集"
+              : "附件已保存到项目",
       );
       return true;
     } catch (e) {
@@ -447,7 +457,7 @@ export default function App() {
             </button>
             <div className="sidebar-spacer" />
             <p className="side-label sidebar-note">
-              v0.7.0-beta.1 · 测试版
+              v0.8.0-beta.1 · 测试版
               <br />
               既有文本 → 视觉资产 → 插图
             </p>
@@ -575,7 +585,10 @@ export default function App() {
                   }}
                 />
               ) : modal.type === "import" ? (
-                <ImportText onDone={() => setModal(null)} />
+                <ImportText
+                  method={modal.method}
+                  onDone={() => setModal(null)}
+                />
               ) : modal.type === "links" ? (
                 <Links onDone={() => setModal(null)} />
               ) : modal.type === "override" ? (
@@ -584,6 +597,61 @@ export default function App() {
                 <ExportText data={modal.data} onDone={() => setModal(null)} />
               ) : (
                 modal.content || null
+              )}
+            </section>
+          </div>
+        )}
+        {importReports.length > 0 && (
+          <div className="modal-shade">
+            <section
+              className="modal"
+              role="dialog"
+              aria-modal="true"
+              aria-label="导入字数与用量预估"
+            >
+              <div className="modal-heading">
+                <h2>导入完成 · 字数与输入用量</h2>
+                <button onClick={() => setImportReports((v) => v.slice(1))}>
+                  关闭用量提示
+                </button>
+              </div>
+              <p>
+                {importReports[0].name} · 本次导入{" "}
+                {importReports[0].import_characters.toLocaleString()}{" "}
+                字（不含空白） · 当前章节共{" "}
+                {importReports[0].chapter_characters.toLocaleString()} 字
+              </p>
+              <table>
+                <thead>
+                  <tr>
+                    <th>操作</th>
+                    <th>预计输入 token（约）</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    ["source", "章节原文自身"],
+                    ["advice", "整章建卡建议"],
+                    ["build", "正式建卡（依勾选范围）"],
+                    ["split", "整章情节拆分及关联"],
+                  ].map(([key, label]) => (
+                    <tr key={key}>
+                      <td>{label}</td>
+                      <td>
+                        {importReports[0][key]
+                          .map((n) => n.toLocaleString())
+                          .join("—")}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="muted small">{importReports[0].method}</p>
+              <p>
+                各操作分别估算，不能视为总费用。导入没有调用模型；尚未自动建立资产或拆分情节。
+              </p>
+              {importReports.length > 1 && (
+                <small>另有 {importReports.length - 1} 份导入报告待查看</small>
               )}
             </section>
           </div>
@@ -761,7 +829,7 @@ function Projects({ onOpen, onCreate }) {
     </>
   );
 }
-function ImportText({ onDone }) {
+function ImportText({ onDone, method }) {
   const { s, run, uploadFiles } = React.useContext(WorkspaceContext);
   const [name, setName] = useState(""),
     [text, setText] = useState(""),
@@ -771,20 +839,24 @@ function ImportText({ onDone }) {
       <p className="muted small">
         可逐段导入 TXT、MD、DOCX、EPUB，同项目共享资产。
       </p>
-      <DropZone
-        onFiles={async (files) => {
-          if (await uploadFiles(files, "text")) onDone();
-        }}
-        accept=".txt,.md,.docx,.epub"
-        label="拖入原文文件，或点击选择"
-      />
-      <button
-        onClick={async () => {
-          if (await run("import_file")) onDone();
-        }}
-      >
-        从文件导入
-      </button>
+      {method !== "paste" && (
+        <>
+          <DropZone
+            onFiles={async (files) => {
+              if (await uploadFiles(files, "text")) onDone();
+            }}
+            accept=".txt,.md,.docx,.epub"
+            label="拖入原文文件，或点击选择"
+          />
+          <button
+            onClick={async () => {
+              if (await run("import_file")) onDone();
+            }}
+          >
+            从文件导入
+          </button>
+        </>
+      )}
       {placement !== null && (
         <section
           role="dialog"
@@ -828,31 +900,33 @@ function ImportText({ onDone }) {
           <button onClick={() => setPlacement(null)}>取消</button>
         </section>
       )}
-      <form
-        onSubmit={async (e) => {
-          e.preventDefault();
-          setPlacement("new");
-        }}
-      >
-        <label>
-          片段名称
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="例如：第一章 · 雨夜渡口"
-          />
-        </label>
-        <label>
-          或直接粘贴原文
-          <textarea
-            rows={7}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            required
-          />
-        </label>
-        <button className="primary">保留为原文片段</button>
-      </form>
+      {method !== "file" && (
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            setPlacement("new");
+          }}
+        >
+          <label>
+            片段名称
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="例如：第一章 · 雨夜渡口"
+            />
+          </label>
+          <label>
+            或直接粘贴原文
+            <textarea
+              rows={7}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              required
+            />
+          </label>
+          <button className="primary">保留为原文片段</button>
+        </form>
+      )}
     </>
   );
 }

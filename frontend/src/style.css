@@ -1890,3 +1890,19 @@ pre {
   border-top: 1px solid var(--line);
   padding-top: 10px;
 }
+
+.asset-status {
+  width: auto;
+  min-width: 90px;
+  padding: 5px 9px;
+}
+.modal table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.modal td,
+.modal th {
+  text-align: left;
+  padding: 9px;
+  border-bottom: 1px solid var(--line);
+}

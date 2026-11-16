@@ -29,6 +29,9 @@ def work(app, tmp_path, monkeypatch):
     w = Workspace(tmp_path / "data")
     account = w.store.create_account("测试账户")
     w.login(account["id"])
+    w.store.save_settings(
+        account, {**w.store.settings(account), "asset_association_mode": "local"}
+    )
     p = w.store.create_project(account, "测试小说")
     path = str(p.path)
     p.close()
@@ -1003,14 +1006,14 @@ def test_asset_review_and_visual_field_separation_and_export(work, tmp_path):
         work.scene, [dict(name="甲", kind="人物", asset_id=asset["id"])]
     )
     bundle = work.render_bundle("甲站在渡口，平视中景，柔和侧光。")
-    assert "棕色眼睛" in bundle["text"] and "参考图1" in bundle["text"]
+    assert "棕色眼睛" not in bundle["text"] and "参考图1" in bundle["text"]
     assert "父母" not in bundle["text"] and "朋友" not in bundle["text"]
     work.keys[work.account["id"] + ":test"] = "secret-sentinel"
     exported = work.export_render_bundle("甲站在渡口，平视中景。", "渡口")
     from pathlib import Path
 
     folder = Path(exported["path"])
-    assert (folder / "参考图/参考图1_甲.png").is_file()
+    assert (folder / "参考图1_甲.png").is_file()
     assert "父母" not in (folder / "生图方案.md").read_text()
     assert work.export_render_bundle("甲站在渡口。", "渡口")["path"] != str(folder)
     assert not work.project.jobs()
@@ -1171,3 +1174,237 @@ def test_asset_variant_render_plans_are_separate_and_can_adopt_reference(
     )
 
     assert not work.project.assets()[0].get("image")
+
+
+def set_association(work, mode):
+    work.store.save_settings(
+        work.account,
+        {**work.store.settings(work.account), "asset_association_mode": mode},
+    )
+
+
+def test_default_ai_association_and_first_person_single_request(work):
+    from novelviz.storage import DEFAULTS
+
+    assert DEFAULTS["asset_association_mode"] == "ai"
+    set_association(work, "ai")
+    work.import_text("第一人称", "我推开教室的门。")
+    asset = work.save_asset(
+        dict(
+            name="李明",
+            kind="人物",
+            details=dict(background="本章第一人称叙述者"),
+            review="已确认",
+        )
+    )
+    work.finish_assets([], confirm_pending=True)
+    job, _, _, _ = work.prepare_text(0, "拆分")
+    assert len(job["messages"]) == 1 and len(work.project.jobs()) == 1
+    assert (
+        job["association_mode"] == "ai"
+        and job["association_index"][0]["id"] == asset["id"]
+    )
+    assert "asset_ids" in job["params"]["system"] and "第一人称" in job["context"]
+    output = dict(
+        summary="李明进入教室",
+        scenes=[
+            dict(
+                title="入室",
+                start_paragraph=1,
+                end_paragraph=1,
+                asset_ids=[asset["id"]],
+            )
+        ],
+    )
+    work.process_task_output(job, json.dumps(output, ensure_ascii=False))
+    drafts = work.snapshot()["drafts"][work.segment]["rows"]
+    assert drafts[0]["required_assets"][0]["asset_id"] == asset["id"]
+    work.confirm_split(drafts)
+    assert work.project.requirements(work.scene)[0]["asset_id"] == asset["id"]
+    work.map_assets_to_scenes()
+    assert work.project.requirements(work.scene)[0]["asset_id"] == asset["id"]
+
+
+def test_ai_association_invalid_ids_no_guess_or_retry_and_manual_preserved(work):
+    set_association(work, "ai")
+    a = work.save_asset(dict(name="甲", kind="人物", review="已确认"))
+    b = work.save_asset(dict(name="乙", kind="人物", review="已确认"))
+    work.confirm_split(rows())
+    scene = work.scene
+    work.project.set_requirements(
+        scene, [dict(name="乙", kind="人物", asset_id=b["id"])]
+    )
+    work.project.config.setdefault("asset_match_exclusions", {})[scene] = [a["id"]]
+    work.project.save_config()
+    job, _, _, _ = work.prepare_text(0, "重新解析")
+    proposed = rows()
+    proposed[0]["asset_ids"] = ["unknown-id"]
+    work.process_task_output(job, json.dumps(dict(scenes=proposed)))
+    candidates = work.project.config["split_drafts"][work.segment]["rows"]
+    assert candidates[0]["association_note"] and all(
+        r["asset_id"] != "unknown-id" for r in candidates[0]["required_assets"]
+    )
+    assert len(work.project.jobs()) == 1
+    proposed[0]["asset_ids"] = [a["id"]]
+    work.process_task_output(job, json.dumps(dict(scenes=proposed)))
+    candidates = work.project.config["split_drafts"][work.segment]["rows"]
+    assert candidates[0]["id"] == scene
+    assert [r["asset_id"] for r in candidates[0]["required_assets"]] == [b["id"]]
+    work.confirm_split(candidates)
+    assert [r["asset_id"] for r in work.project.requirements(scene)] == [b["id"]]
+
+
+def test_manual_association_does_not_scan_names(work):
+    set_association(work, "manual")
+    work.save_asset(dict(name="甲", kind="人物", review="已确认"))
+    work.confirm_split(rows())
+    work.map_assets_to_scenes()
+    assert not work.project.requirements(work.scene)
+
+
+def test_scene_reference_omits_visual_text_and_explicit_api_fallback(
+    work, tmp_path, monkeypatch
+):
+    a = work.save_asset(
+        dict(name="甲", kind="人物", details=dict(face="外观哨兵甲"), review="已确认")
+    )
+    b = work.save_asset(
+        dict(
+            name="乙", kind="人物", details=dict(body="无图外观哨兵乙"), review="已确认"
+        )
+    )
+    work.add_reference(a["id"], picture(tmp_path / "a.png"))
+    work.confirm_split(rows())
+    work.project.set_requirements(
+        work.scene,
+        [dict(name=r["name"], kind="人物", asset_id=r["id"]) for r in (a, b)],
+    )
+    bundle = work.render_bundle("甲（参考图1）和乙在渡口交谈。")
+    assert "外观哨兵甲" not in bundle["text"] and "无图外观哨兵乙" in bundle["text"]
+    assert "外观哨兵甲" not in work.context(2)
+    work.save_connection(
+        dict(
+            id="img",
+            name="图片",
+            kind="image_api",
+            endpoint="http://localhost:9999/v1",
+            model="test",
+        )
+    )
+    work.store.save_image_defaults(work.account, dict(connection_id="img"))
+    bridge = Bridge(work.store.root)
+    bridge.workspace = work
+    calls = []
+    monkeypatch.setattr(bridge, "start", lambda job, fn, text: calls.append(job))
+    bridge.confirm = lambda *a: False
+    assert bridge.dispatch("generate", dict(plan="甲（参考图1）和乙交谈。"))[
+        "cancelled"
+    ]
+    assert not calls
+    bridge.confirm = lambda *a: True
+    bridge.dispatch("generate", dict(plan="甲（参考图1）和乙交谈。"))
+    assert calls[0]["reference_fallback"] and not calls[0]["references"]
+    assert "外观哨兵甲" in calls[0]["prompt"] and "参考图" not in calls[0]["prompt"]
+
+
+def test_export_flat_overwrite_preserves_extra_files_and_refuses_other_plan(
+    work, tmp_path
+):
+    a = work.save_asset(dict(name="甲", kind="人物", review="已确认"))
+    work.add_reference(a["id"], picture(tmp_path / "a.png"))
+    work.confirm_split(rows())
+    work.project.set_requirements(
+        work.scene, [dict(name="甲", kind="人物", asset_id=a["id"])]
+    )
+    result = work.export_render_bundle("甲站在渡口。", "素材")
+    folder = Path(result["path"])
+    assert (folder / "参考图1_甲.png").is_file()
+    assert not (folder / "参考图").exists()
+    (folder / "用户备注.txt").write_text("保留")
+    options = work.render_export_options("素材")
+    assert options["versions"][0]["path"] == str(folder)
+    result2 = work.export_render_bundle(
+        "甲坐在渡口。", "素材", mode="overwrite", version=str(folder)
+    )
+    assert (
+        result2["path"] == str(folder) and "坐" in (folder / "生图方案.md").read_text()
+    )
+    assert (folder / "用户备注.txt").read_text() == "保留"
+    assert not list(folder.parent.glob(".覆盖前_*"))
+    with pytest.raises(ValueError, match="另一份|素材版本"):
+        work.export_render_bundle(
+            "甲角色设定图。",
+            "素材",
+            asset=a["id"],
+            mode="overwrite",
+            version=str(folder),
+        )
+
+
+def test_external_scene_image_is_candidate_before_confirmation(work, tmp_path):
+    work.confirm_split(rows())
+    image = picture(tmp_path / "外部.png")
+    bridge = Bridge(work.store.root)
+    bridge.workspace = work
+    result = bridge.dispatch(
+        "upload",
+        dict(
+            target="scene_image",
+            name="外部.png",
+            data=base64.b64encode(image.read_bytes()).decode(),
+        ),
+    )
+    image.unlink()
+    assert work.file(result["path"]).is_file()
+    assert work.snapshot()["jobs"][0]["source"] == "用户导入"
+    assert not work.project.final_results()
+    bridge.dispatch("scene_candidate", dict(path=result["path"]))
+    assert work.snapshot()["jobs"][0]["pictures"][0]["hidden"]
+    assert work.file(result["path"]).is_file()
+    bridge.dispatch("scene_candidate", dict(path=result["path"], restore=True))
+    assert not work.snapshot()["jobs"][0]["pictures"][0]["hidden"]
+    bridge.dispatch("choose_result", dict(path=result["path"]))
+    assert len(work.project.final_results()) == 1
+    assert len(work.project.jobs()) == 1
+
+
+def test_import_counts_and_estimates_for_paste_merge_and_attachment(work):
+    bridge = Bridge(work.store.root)
+    bridge.workspace = work
+    result = bridge.dispatch("import_text", dict(name="新章", text="我走进教室。"))
+    report = result["import_estimate"]
+    assert report["import_characters"] == 6
+    assert (
+        report["chapter_characters"] == 6 and report["split"][1] > report["source"][1]
+    )
+    assert "不含输出" in report["method"] and not work.project.jobs()
+    chapter = work.segment
+    result = bridge.dispatch(
+        "import_text", dict(name="合并", text="下雨了。", target=chapter)
+    )
+    assert result["import_estimate"]["chapter_characters"] == 10
+    assert result["import_estimate"]["import_characters"] == 4
+    result = bridge.dispatch(
+        "upload",
+        dict(
+            target="text",
+            name="附件.txt",
+            data=base64.b64encode("一个独立附件。".encode()).decode(),
+        ),
+    )
+    assert (
+        result["import_estimate"]["chapter_characters"] == 7 and work.segment != chapter
+    )
+
+
+def test_asset_picture_default_rules_and_upgrade_preserve_personal_edit():
+    from novelviz.prompts import default_template, upgrade_template
+
+    template = default_template(5)
+    assert (
+        "背景人群" in template["body"]
+        and "持握者" in template["body"]
+        and "前景" in template["body"]
+    )
+    old = dict(template, version="5.0", body="我的自定义提示词")
+    assert upgrade_template(old)["body"] == "我的自定义提示词"

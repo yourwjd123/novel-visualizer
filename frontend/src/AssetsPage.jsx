@@ -23,6 +23,8 @@ export default function AssetsPage() {
     openAI,
     withProject,
     openAssetRender,
+    setModal,
+    uploadFiles,
   } = useWorkspace();
   const [filter, setFilter] = useState("全部"),
     [search, setSearch] = useState(""),
@@ -119,6 +121,18 @@ export default function AssetsPage() {
         actions={
           <>
             <button
+              disabled={s.busy}
+              onClick={() => setModal({ type: "import", method: "file" })}
+            >
+              导入章节附件
+            </button>
+            <button
+              disabled={s.busy}
+              onClick={() => setModal({ type: "import", method: "paste" })}
+            >
+              粘贴原文
+            </button>
+            <button
               disabled={!s.segment || s.busy}
               onClick={() =>
                 run("send", {
@@ -148,6 +162,30 @@ export default function AssetsPage() {
           </>
         }
       />
+      {!s.segment && (
+        <DropZone
+          accept=".txt,.md,.docx,.epub"
+          label="拖入章节附件；每个文件独立建章，导入不调用模型"
+          onFiles={(files) => uploadFiles(files, "text")}
+        />
+      )}
+      {(s.archived_chapters || []).length > 0 && (
+        <details>
+          <summary>已删除章节</summary>
+          {s.archived_chapters.map((ch) => (
+            <p key={ch.id}>
+              {ch.name}
+              <button
+                onClick={() =>
+                  run("chapter_action", { id: ch.id, restore: true })
+                }
+              >
+                恢复章节
+              </button>
+            </p>
+          ))}
+        </details>
+      )}
       <div className="source-toolbar">
         <label>
           当前章节
@@ -575,17 +613,23 @@ export default function AssetsPage() {
               全选当前资产
             </button>
             <button onClick={() => setSelected(new Set())}>取消选择</button>
-            {["待确认", "已确认", "已锁定"].map((status) => (
-              <button
-                key={status}
-                disabled={!selected.size || s.busy}
-                onClick={() =>
-                  run("asset_review", { ids: [...selected], status })
-                }
-              >
-                批量设为{status}
-              </button>
-            ))}
+            <select
+              aria-label="批量资产状态"
+              value=""
+              disabled={!selected.size || s.busy}
+              onChange={(e) =>
+                e.target.value &&
+                run("asset_review", {
+                  ids: [...selected],
+                  status: e.target.value,
+                })
+              }
+            >
+              <option value="">批量设置状态…</option>
+              <option value="待确认">待确认（取消确认／解锁）</option>
+              <option value="已确认">已确认</option>
+              <option value="已锁定">已锁定</option>
+            </select>
           </div>
           <div className="asset-grid">
             {rows.map((a) => (
@@ -614,34 +658,23 @@ export default function AssetsPage() {
                       ? "首现段落 " + order(a)
                       : "出现位置待核对"}
                   </span>
-                  <span
-                    className={
-                      "badge " + (a.review === "已确认" ? "ok" : "warning")
-                    }
-                  >
-                    {a.review}
-                  </span>
-                  <button
-                    onClick={() =>
+                  <select
+                    className="asset-status"
+                    aria-label={"资产状态 " + a.name}
+                    title="已确认表示已审核；已锁定会冻结内容，需先解锁才能编辑。"
+                    value={a.review || "待确认"}
+                    disabled={s.busy}
+                    onChange={(e) =>
                       run("asset_review", {
                         ids: [a.id],
-                        status: a.review === "已确认" ? "待确认" : "已确认",
+                        status: e.target.value,
                       })
                     }
                   >
-                    {a.review === "已锁定"
-                      ? "解锁并确认"
-                      : a.review === "已确认"
-                        ? "取消确认"
-                        : "确认"}
-                  </button>
-                  <button
-                    onClick={() =>
-                      run("asset_review", { ids: [a.id], status: "已锁定" })
-                    }
-                  >
-                    锁定
-                  </button>
+                    <option value="待确认">待确认</option>
+                    <option value="已确认">已确认</option>
+                    <option value="已锁定">已锁定</option>
+                  </select>
                   <button onClick={() => openAssetRender(a.id)}>
                     制作资产图
                   </button>

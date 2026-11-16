@@ -11,7 +11,10 @@ export function RenderEditor({ asset = null }) {
     [name, setName] = useState(""),
     [changed, setChanged] = useState(false),
     [preview, setPreview] = useState(null),
-    [exported, setExported] = useState("");
+    [exported, setExported] = useState(""),
+    [exportDialog, setExportDialog] = useState(null),
+    [exportVersion, setExportVersion] = useState("");
+  const initialized = useRef(false);
   const latest = useRef("");
   latest.current = text;
   const key = asset ? "asset_" + asset : "scene_" + s.scene;
@@ -27,9 +30,11 @@ export function RenderEditor({ asset = null }) {
   ]);
   useEffect(() => {
     let alive = true;
+    initialized.current = false;
     api("render_state", { asset })
       .then((v) => {
         if (!alive) return;
+        initialized.current = true;
         setState(v);
         setText(v.text || "");
         setName(v.saved.name || v.name);
@@ -44,6 +49,7 @@ export function RenderEditor({ asset = null }) {
     };
   }, [key]);
   useEffect(() => {
+    if (!initialized.current) return;
     let alive = true;
     api("render_state", { asset })
       .then((v) => {
@@ -86,17 +92,81 @@ export function RenderEditor({ asset = null }) {
   }
   async function exportFiles() {
     if (!(await save())) return;
-    const result = await run("export_render", { asset, text, name });
+    const options = await run("render_export_options", { asset, name }, false);
+    if (options) {
+      setExportDialog(options);
+      setExportVersion(options.versions[0]?.path || "");
+    }
+  }
+  async function finishExport(mode) {
+    const result = await run("export_render", {
+      asset,
+      text,
+      name,
+      mode,
+      version: exportVersion,
+    });
     if (result) {
       setExported(result.path);
+      setExportDialog(null);
       notify("生图素材已保存：" + result.path);
     }
   }
+  if (!state)
+    return (
+      <section
+        className="render-editor"
+        aria-label={asset ? "资产图方案工作区" : "场景图方案工作区"}
+      >
+        正在加载生图方案…
+      </section>
+    );
   return (
     <section
       className="render-editor"
       aria-label={asset ? "资产图方案工作区" : "场景图方案工作区"}
     >
+      {exportDialog && (
+        <div className="modal-shade">
+          <section
+            className="modal"
+            role="dialog"
+            aria-label="保存生图素材方式"
+          >
+            <h2>保存生图素材</h2>
+            <p>方案与参考图片将放在同一目录。</p>
+            <p className="muted small">{exportDialog.root}</p>
+            {exportDialog.versions.length > 0 && (
+              <label>
+                要覆盖的已有版本
+                <select
+                  aria-label="待覆盖素材版本"
+                  value={exportVersion}
+                  onChange={(e) => setExportVersion(e.target.value)}
+                >
+                  {exportDialog.versions.map((v) => (
+                    <option key={v.path} value={v.path}>
+                      {v.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <div className="actions">
+              <button className="primary" onClick={() => finishExport("new")}>
+                另存为新版本（默认）
+              </button>
+              <button
+                disabled={!exportVersion}
+                onClick={() => finishExport("overwrite")}
+              >
+                覆盖所选版本
+              </button>
+              <button onClick={() => setExportDialog(null)}>取消</button>
+            </div>
+          </section>
+        </div>
+      )}
       <div className="section-heading">
         <h2>生图方案（最终可提交文本）</h2>
         <button
@@ -176,7 +246,14 @@ export function RenderEditor({ asset = null }) {
           disabled={s.busy}
           onClick={() =>
             openCompletion(
-              { type: "prompt", id: key, text },
+              {
+                type: "prompt",
+                id: key,
+                text,
+                render_kind: asset
+                  ? s.assets.find((a) => a.id === asset)?.kind
+                  : "illustration",
+              },
               ["text"],
               (changes, original) => {
                 if (latest.current !== original.text) {
@@ -222,6 +299,11 @@ export function RenderEditor({ asset = null }) {
       {state?.rows.some((r) => r.asset && !r.asset.details) && (
         <p className="notice">
           部分资产沿用旧版描述，请在资产卡中分类整理，核对实际提交内容。
+        </p>
+      )}
+      {!asset && !!state?.references.length && (
+        <p className="muted small">
+          有图资产只引用参考图，不自动追加外观字段；旧方案中已写入的文字请自行核对。
         </p>
       )}
       <h3>参考图编号（实际文件）</h3>

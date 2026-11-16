@@ -3,7 +3,7 @@
 import copy
 import json
 
-VERSION = "5.0"
+VERSION = "6.0"
 
 TASKS = {
     "split": (
@@ -13,7 +13,7 @@ TASKS = {
         """目标：将原文划为连续、可编辑的情节模块，供单张场景插图使用。
 粗：主要事件；中：同一时空连续行动；细：适合单张插图的瞬间。用户给出的深度优先。
 以地点、时间、视角、主要行动和事件转折划界，不机械按字数截断，不割裂紧密动作与对话。对提供的段落顺序完整覆盖，每段恰好归属一次，不能遗漏、重叠或编造段落编号。
-同时输出 summary：本章忠实、简洁的内容梗概（建议200—800字），不加入原文未提供的世界知识。每个模块给客观短标题（4—16字）、简短摘要（建议不超过80字）、起止段落和单个视觉瞬间（建议不超过60字）。只在存在歧义时填写 rationale 和 questions，否则可省略。不要逐段复述原文。字段遵循下方唯一输出约定。仅输出候选，不视为已确认。""",
+同时输出 summary：本章忠实、简洁的内容梗概（建议200—800字），不加入原文未提供的世界知识。每个模块给客观短标题（4—16字）、简短摘要（建议不超过80字）、起止段落和单个视觉瞬间（建议不超过60字）。只在存在歧义时填写 rationale 和 questions，否则可省略。仅在本次明确提供可用资产索引及 asset_ids 输出约定时，同轮关联已有资产，结合叙述身份理解第一人称、代词与间接称谓；只返回索引中已有ID，不确定就留空，不重建资产。不要逐段复述原文。字段遵循下方唯一输出约定。仅输出候选，不视为已确认。""",
     ),
     "resplit": (
         "调整已有拆分",
@@ -50,7 +50,7 @@ TASKS = {
         "场景插图方案",
         2,
         "text",
-        """根据当前情节、确认的资产和选定副卡，给一个单张插图方案。简述画面瞬间、实际出镜对象、动作与空间关系、构图和光线。只表现同一时刻，尊重原文，不增加角色或调换道具。本结果就是最终生图输入，只输出可直接生成的画面正文；禁止推测、建议、思考、审核结论、关键缺项、待确认事项和附加问题。未明确且未获用户授权补全的外观省略。使用程序提供的实际参考图编号，将每张参考图绑定到相应对象，例如甲（参考图1）、乙（参考图2）。无图资产以可见外观文本描述，不假定文件已上传。人物背景经历与关系不得充当外观提示。""",
+        """根据当前情节、确认的资产和选定副卡，给一个单张插图方案。简述画面瞬间、实际出镜对象、动作与空间关系、构图和光线。只表现同一时刻，尊重原文，不增加角色或调换道具。本结果就是最终生图输入，只输出可直接生成的画面正文；禁止推测、建议、思考、审核结论、关键缺项、待确认事项和附加问题。未明确且未获用户授权补全的外观省略。使用程序提供的实际参考图编号，将每张参考图绑定到相应对象，例如甲（参考图1）、乙（参考图2）。无图资产以可见外观文本描述，不假定文件已上传。人物背景经历与关系不得充当外观提示。有实际参考图的资产只用名称与编号绑定，要求参照参考图，不复制该资产的外观文字；无图才用视觉文字描述。动作、构图、空间关系仍明确描述。""",
     ),
     "prompt": (
         "方案扩写（旧独立任务已停用）",
@@ -70,7 +70,7 @@ TASKS = {
         "资产设定图方案",
         5,
         "text",
-        """依据当前资产及用户选定状态，输出一个可直接使用的设定图正向提示词。清楚展示主体和已确认特征，不默认生成多视图，不增加未经确认的外貌。仅用户要求时安排正侧面等视角。使用提供的实际参考图编号绑定主体。只输出最终画面正文，不夹分析、建议、推测、待确认内容或清单；背景经历与关系不作为可见外观。""",
+        """依据当前资产及用户选定状态，输出一个可直接使用的设定图正向提示词。清楚展示主体和已确认特征，不默认生成多视图，不增加未经确认的外貌。仅用户要求时安排正侧面等视角。道具设定图仅展示道具本体，不出现人物、手部、人体局部或持握者。场景设定图以环境、空间结构为主体；可有弱化细节的背景人群，但不得成为视觉焦点，前景不得出现遮挡主体、干扰构图或占据显著画面的人物，不擅自加入特定剧情角色。使用提供的实际参考图编号绑定主体。只输出最终画面正文，不夹分析、建议、推测、待确认内容或清单；背景经历与关系不作为可见外观。""",
     ),
     "review": (
         "视觉审核",
@@ -132,6 +132,7 @@ def default_template(node):
 
 
 OUTPUT_SCHEMAS = {
+    "scene_links": '只输出 {"summary":"本章梗概","scenes":[{"title":"短标题","summary":"摘要","start_paragraph":1,"end_paragraph":2,"visual_moment":"画面瞬间","asset_ids":["提供的资产ID"]}]}。连续完整覆盖原文；同时从提供的索引关联本情节涉及的资产，不创建资产。结合叙述身份解析第一人称、代词及间接称谓，不确定时asset_ids为空数组，禁止猜测ID；关联不等于必须出镜。',
     "scenes": '只输出 {"summary":"本章梗概","scenes":[{"title":"短标题","summary":"简短摘要","start_paragraph":1,"end_paragraph":2,"visual_moment":"一个画面瞬间"}]}。段落连续完整覆盖，无重叠。不要提取资产。',
     "assets": '只输出 {"assets":[{"name":"名称","kind":"人物","description":"简短可见特征","details":{"face":"","body":"","appearance_state":"","background":"","relationships":""},"source":"原文明确","priority":"重要","evidence":[{"paragraph":1,"quote":"短摘录"}],"attributes":[{"name":"姓名","value":"名称","source":"原文明确","evidence_refs":[0]}]}]}。details 按类别使用字段：人物 face/body/appearance_state/background/relationships；场景 scene_description/plot_context；道具 shape/plot_context。值均为字符串，不同类别不要混用字段。kind仅人物/场景/道具，priority仅核心/重要/建议。evidence 和 evidence_refs 始终为数组，即使只有一项。attributes、states 等没有实际信息时省略，不罗列未知值。states 如有则为 [{"range":"本章","detail":"状态"}]。',
     "text": "输出简洁、可编辑的任务结果，不输出分析过程。",
@@ -204,7 +205,7 @@ def validate_scenes(data, count):
             raise ValueError("情节必须按段落顺序完整覆盖，不能遗漏、重叠或超出原文")
         if not isinstance(r.get("summary", ""), str):
             raise ValueError("情节摘要必须是文本")
-        # Asset association is computed locally, never blocks plot extraction.
+        # Asset IDs are validated separately; association problems do not discard valid plots.
         previous = b
     if previous != count:
         raise ValueError("情节未覆盖全部原文段落")
@@ -355,16 +356,38 @@ _V4_BODIES = {
 }
 
 
+_V5_BODIES = {
+    "split": "fc7650e3095e085ce7834895cbc7b635a743e73641b91b81a6d158473671b8ed",
+    "resplit": "8c36bbbe366df5d146d2adba90acfda0a0325839acee4167e5feaee86f89cd89",
+    "assets": "a24be510fc2e44f6187befab7e3260688871ae1cdab87a3fa7440da3299607cb",
+    "characters": "f50824f5cfd8863aec50a58d39d38735216ce5f2a097d190b62cc9a073258119",
+    "places": "88a79b1d3f22c14d83121415370b6d60da2d1b3549fcca2de621d41d67d35a1b",
+    "props": "b017c93bb9227821ba8d4c30056bcccb20f9ecf26c29750c13711b1b6e655766",
+    "scene": "2036bee6b9b523ad18490cc81651d7727f8e91a2ade05242a2ffc744367de517",
+    "prompt": "535b43ecb37677ad5514d82926101c6318610039232b1662dfb3bdba27860044",
+    "image": "1c999ddad181002b75a822e95585ace0e4a86f38bd9642a09d85e96e39a878a6",
+    "reference": "a700261ceff7fbba636e5017745af1656158fad9c3f9c251e10b89569aa8bedf",
+    "review": "769ebaf379233a5d7d89fbdbf687db35b99020ec57fc5740c9363ad3cbb6e705",
+    "edit": "a1e233776118cb9fb772449e3bfccf4be63958f533afa2231ed8da2081dd8c7c",
+    "planner": "688b8b81619a734e103317cecb3b69edb3a9139965811cbf149eebc5d5a8d193",
+}
+
+
 def upgrade_template(template):
     import hashlib
 
-    if template.get("version") in ("2.0", "2.1", "3.0", "4.0") and hashlib.sha256(
-        template.get("body", "").encode()
-    ).hexdigest() in (
+    if template.get("version") in (
+        "2.0",
+        "2.1",
+        "3.0",
+        "4.0",
+        "5.0",
+    ) and hashlib.sha256(template.get("body", "").encode()).hexdigest() in (
         _LEGACY_BODIES.get(template.get("id")),
         _V21_BODIES.get(template.get("id")),
         _V3_BODIES.get(template.get("id")),
         _V4_BODIES.get(template.get("id")),
+        _V5_BODIES.get(template.get("id")),
     ):
         current = next((t for t in builtins() if t["id"] == template["id"]), None)
         if current:
