@@ -27,16 +27,21 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
     current = useRef(null),
     geometryTimer = useRef(null);
   useImperativeHandle(ref, () => ({ flush: async () => {} }));
-  const job = s.jobs.find((j) =>
-    ai.job
+  const job = s.jobs.find((j) => {
+    if (
+      tab === "complete" &&
+      (j.mode !== "complete" || j.target?.request_id !== ai.target?.request_id)
+    )
+      return false;
+    return ai.job
       ? j.id === ai.job
       : j.segment === s.segment &&
-        (tab === "consult"
-          ? j.mode === "consult"
-          : tab === "complete"
-            ? j.mode === "complete"
-            : true),
-  );
+          (tab === "consult"
+            ? j.mode === "consult"
+            : tab === "complete"
+              ? j.mode === "complete"
+              : true);
+  });
   const scope = "consult_" + s.segment;
   const consultationKey = [
     s.account.id,

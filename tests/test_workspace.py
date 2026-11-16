@@ -1408,3 +1408,132 @@ def test_asset_picture_default_rules_and_upgrade_preserve_personal_edit():
     )
     old = dict(template, version="5.0", body="我的自定义提示词")
     assert upgrade_template(old)["body"] == "我的自定义提示词"
+
+
+def test_bookshelf_covers_account_isolation_and_reader_reuses_source(work, tmp_path):
+    book = work.bookshelf()[0]
+    assert set(book) == {"id", "name", "path", "cover"} and not book["cover"]
+    original = work.project.segment_text(work.segment)
+    result = work.reader_chapter()
+    assert len(result["paragraphs"]) == 3 and result["source_hash"]
+    assert work.project.segment_text(work.segment) == original
+    work.set_book_cover(picture(tmp_path / "cover.png"))
+    assert work.bookshelf()[0]["cover"].startswith("data:image/jpeg")
+    work.set_book_cover()
+    assert not work.bookshelf()[0]["cover"]
+    other = work.store.create_account("其他读者")
+    work.login(other["id"])
+    assert not work.bookshelf()
+
+
+def test_reading_position_bookmarks_relocation_and_stale_source(work):
+    chapter = work.segment
+    work.save_reading_position(dict(chapter=chapter, paragraph=2, offset=2))
+    work.reader_bookmark(
+        dict(anchor=dict(chapter=chapter, paragraph=2, offset=2), label="交信")
+    )
+    source = work.file(work.project.segments()[0]["file"])
+    source.write_text("新加入的开头。\n\n" + source.read_text(), encoding="utf-8")
+    reading = work.reader_chapter()
+    assert reading["position"]["paragraph"] == 3 and reading["position"]["offset"] == 2
+    assert reading["position"]["relocated"]
+    assert reading["bookmarks"][0]["anchor"]["paragraph"] == 3
+    old_hash = reading["source_hash"]
+    source.write_text("完全不同的正文。", encoding="utf-8")
+    assert work.reader_chapter()["position"]["stale"]
+    with pytest.raises(ValueError, match="原文已变化"):
+        work.save_reading_position(
+            dict(chapter=chapter, paragraph=1, offset=0, source_hash=old_hash)
+        )
+    bookmark = work.reader_chapter()["bookmarks"][0]
+    work.reader_bookmark(dict(action="delete", id=bookmark["id"]))
+    assert not work.reader_chapter()["bookmarks"]
+
+
+def test_reader_preferences_persist_and_do_not_change_production_selection(work):
+    first = work.segment
+    work.reader_preferences(dict(mode="pages", font_size=24, images_collapsed=True))
+    assert work.reader_preferences()["images_collapsed"]
+    assert (work.project.path / "08_项目数据/阅读记录.json").is_file()
+    second = work.import_text("第二章", "第二章正文。")
+    work.reader_chapter(first)
+    assert work.segment == second
+    work.chapter_action(first)
+    with pytest.raises(ValueError):
+        work.reader_chapter(first)
+    for change in [
+        dict(mode="invalid"),
+        dict(font_size=100),
+        dict(images_collapsed="true"),
+    ]:
+        with pytest.raises(ValueError):
+            work.reader_preferences(change)
+
+
+def test_reader_media_range_primary_and_all_variants_are_read_only(work, tmp_path):
+    asset = work.save_asset(dict(name="甲", kind="人物", review="已确认"))
+    work.add_reference(asset["id"], picture(tmp_path / "base.png"))
+    path = work.project.assets()[0]["image"]
+    hurt = work.save_variant(asset["id"], "受伤", dict(description="有伤"), image=path)
+    work.import_text("第二章", "我已伤愈。")
+    healed = work.save_variant(
+        asset["id"], "伤愈", dict(description="伤愈"), image=path
+    )
+    first = work.project.segments()[0]["id"]
+    work.set_selection(segment=first)
+    work.confirm_split(rows())
+    work.project.set_requirements(
+        work.scene, [dict(name="甲", kind="人物", asset_id=asset["id"])]
+    )
+    choices = json.loads(
+        json.dumps(work.project.config.get("chapter_variant_selections", {}))
+    )
+    media = work.reader_media(first, 1, 1)
+    assert [im["title"] for im in media["assets"][0]["images"]] == [
+        "主卡",
+        "受伤",
+        "伤愈",
+    ]
+    assert choices == work.project.config.get("chapter_variant_selections", {})
+    assert hurt["id"] != healed["id"] and work.project.segment_text(first).startswith(
+        "甲走进"
+    )
+    with pytest.raises(ValueError):
+        work.reader_media(first, 0, 100)
+
+
+def test_results_edit_replace_delete_restore_preserves_jobs_and_original(
+    work, tmp_path
+):
+    work.confirm_split(rows())
+    source = picture(tmp_path / "candidate.png")
+    copied = work.project.path / "05_生成任务/candidate.png"
+    copied.write_bytes(source.read_bytes())
+    job = dict(
+        id="imported-result",
+        created="2026-11-16",
+        scene=work.scene,
+        results=[copied.relative_to(work.project.path).as_posix()],
+        status="success",
+    )
+    work.project.save_job(job)
+    work.select_result(job["results"][0])
+    result = work.project.final_results()[0]
+    original = work.file(result["file"])
+    updated = work.result_edit(
+        dict(id=result["id"], title="新标题", description="已编辑")
+    )
+    assert updated["title"] == "新标题"
+    work.result_edit(dict(id=result["id"]), picture(tmp_path / "replacement.png"))
+    assert original.is_file() and copied.is_file()
+    work.results_delete([result["id"]])
+    assert not work.project.final_results()
+    assert work.result_trash()[0]["title"] == "新标题"
+    assert work.project.jobs()[0]["id"] == job["id"] and work.project.scene(work.scene)
+    work.results_delete([result["id"]], restore=True)
+    assert work.project.final_results()[0]["description"] == "已编辑"
+    assert not work.result_trash()
+    with pytest.raises(ValueError):
+        work.result_edit(dict(id=result["id"], scene="other-project-scene"))
+    with pytest.raises(ValueError):
+        work.results_delete(["missing"])

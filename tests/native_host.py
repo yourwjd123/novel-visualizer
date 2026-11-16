@@ -35,6 +35,43 @@ app.setApplicationName("NovelVisualizerE2E")
 app.setOrganizationName("NovelStudioTests")
 store = Store(sys.argv[1])
 seed_visual_demo(store)
+if os.environ.get("NOVELVIZ_READER_E2E") == "1":
+    from novelviz.storage import Project
+
+    project = Project(store.projects(store.accounts[0])[0].parent.parent)
+    chapter = project.add_segment(
+        "阅读测试章",
+        "\n\n".join(
+            "沈青来到雨夜渡口，手提旧铜灯。"
+            + ("晚风拂过水面，远处的灯火照见归途。" * 12)
+            + str(i)
+            for i in range(60)
+        ),
+    )
+    later = project.add_segment("后续章节", "沈青伤愈，继续启程。")
+    asset = next(a for a in project.assets() if a["name"] == "沈青")
+    asset["variants"] = [
+        dict(
+            id="reader-hurt",
+            title="受伤副卡",
+            chapter=chapter,
+            confirmed=True,
+            revision=1,
+            image=asset["image"],
+            data=dict(description="受伤"),
+        ),
+        dict(
+            id="reader-healed",
+            title="伤愈副卡",
+            chapter=later,
+            confirmed=True,
+            revision=1,
+            image=asset["image"],
+            data=dict(description="伤愈"),
+        ),
+    ]
+    project.save_asset(asset)
+    project.close()
 window = Desktop(sys.argv[1])
 window.resize(1440, 1000)
 window.show()

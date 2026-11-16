@@ -224,6 +224,28 @@ class Bridge(QObject):
             path = str(p.path)
             p.close()
             w.open_project(path)
+        elif op == "bookshelf":
+            return w.bookshelf()
+        elif op == "reader_chapter":
+            return w.reader_chapter(d.get("chapter"))
+        elif op == "reader_media":
+            return w.reader_media(d["chapter"], d["start"], d["end"])
+        elif op == "reader_position":
+            return w.save_reading_position(d)
+        elif op == "reader_preferences":
+            return w.reader_preferences(d)
+        elif op == "reader_bookmark":
+            return w.reader_bookmark(d)
+        elif op == "book_cover_reset":
+            w.set_book_cover()
+        elif op == "result_scenes":
+            return w.result_scenes()
+        elif op == "result_edit":
+            return w.result_edit(d)
+        elif op == "results_delete":
+            w.results_delete(d["ids"], bool(d.get("restore")))
+        elif op == "result_trash":
+            return w.result_trash()
         elif op == "project_open":
             w.open_project(d["path"])
         elif op == "select":
@@ -680,7 +702,7 @@ class Bridge(QObject):
             (".txt", ".md", ".docx", ".epub")
             if target == "text"
             else (".png", ".jpg", ".jpeg", ".webp")
-            if target in ("reference", "scene_image")
+            if target in ("reference", "scene_image", "book_cover", "result_image")
             else (".txt", ".md", ".docx", ".epub", ".png", ".jpg", ".jpeg", ".webp")
         )
         if ext not in permitted:
@@ -692,6 +714,16 @@ class Bridge(QObject):
                 text = read_document(dest)
                 w.import_text(Path(name).stem, text, dest)
                 return dict(import_estimate=w.import_report(text))
+            finally:
+                dest.unlink(missing_ok=True)
+        elif target == "book_cover":
+            try:
+                w.set_book_cover(dest)
+            finally:
+                dest.unlink(missing_ok=True)
+        elif target == "result_image":
+            try:
+                return w.result_edit(dict(id=d["asset"]), dest)
             finally:
                 dest.unlink(missing_ok=True)
         elif target == "scene_image":
@@ -1072,7 +1104,7 @@ class LocalPage(QWebEnginePage):
 class Desktop(QMainWindow):
     def __init__(self, root):
         super().__init__()
-        self.setWindowTitle("墨境 · 小说文本可视化 · v0.8.0-beta.1 测试版")
+        self.setWindowTitle("墨境 · 小说文本可视化 · v0.9.0-beta.1 测试版")
         self.bridge = Bridge(root, self)
         self.view = QWebEngineView(self)
         page = LocalPage(self.view)

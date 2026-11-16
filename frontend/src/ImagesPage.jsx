@@ -9,6 +9,7 @@ import {
   ZoomIn,
   ZoomOut,
   RotateCcw,
+  Trash2,
 } from "lucide-react";
 import { useWorkspace } from "./context";
 import { PageHeading, Empty, DropZone } from "./App";
@@ -172,26 +173,54 @@ export default function ImagesPage() {
 
 export function ResultsPage() {
   const { s, run, notify, setLarge, navigate, setModal } = useWorkspace();
-  const [selected, setSelected] = useState(new Set());
+  const [selected, setSelected] = useState(new Set()),
+    [editing, setEditing] = useState(null),
+    [trash, setTrash] = useState([]);
+  useEffect(() => {
+    api("result_trash")
+      .then(setTrash)
+      .catch((e) => notify(e.message));
+  }, [JSON.stringify(s.results)]);
+  async function remove(ids) {
+    if (
+      !window.confirm(
+        "从成果集中移除所选图片？原图、资产和任务历史保留，可恢复。",
+      )
+    )
+      return;
+    if (await run("results_delete", { ids })) {
+      setSelected(new Set());
+      notify("成果已移入已删除列表");
+    }
+  }
   return (
     <>
       <PageHeading
         title="成果集"
         subtitle="已选定插图按情节回链；原文、引用资产及生成快照保留在项目中。"
         actions={
-          <button
-            className="primary"
-            onClick={async () => {
-              const r = await run(
-                "export_results",
-                selected.size ? { selected: [...selected] } : {},
-              );
-              if (r) notify("成果已导出：" + r.path);
-            }}
-          >
-            <Download size={14} />
-            导出{selected.size ? "选中" : "全部"}成果
-          </button>
+          <>
+            <button
+              disabled={!selected.size}
+              onClick={() => remove([...selected])}
+            >
+              <Trash2 size={14} />
+              批量删除
+            </button>
+            <button
+              className="primary"
+              onClick={async () => {
+                const r = await run(
+                  "export_results",
+                  selected.size ? { selected: [...selected] } : {},
+                );
+                if (r) notify("成果已导出：" + r.path);
+              }}
+            >
+              <Download size={14} />
+              导出{selected.size ? "选中" : "全部"}成果
+            </button>
+          </>
         }
       />
       <div className="result-grid">
@@ -213,6 +242,10 @@ export function ResultsPage() {
             onOpen={() => setLarge({ path: r.file, title: r.title })}
           >
             <footer>
+              <button onClick={() => setEditing(r)}>编辑</button>
+              <button className="danger" onClick={() => remove([r.id])}>
+                删除
+              </button>
               <button
                 className="quiet"
                 onClick={async () => {
@@ -232,6 +265,30 @@ export function ResultsPage() {
           </ImageCard>
         ))}
       </div>
+      {!!trash.length && (
+        <details>
+          <summary>已删除成果</summary>
+          {trash.map((r) => (
+            <p key={r.id}>
+              {r.title}
+              <button
+                onClick={() =>
+                  run("results_delete", { ids: [r.id], restore: true })
+                }
+              >
+                恢复成果
+              </button>
+            </p>
+          ))}
+        </details>
+      )}
+      {editing && (
+        <ResultEditor
+          key={editing.id}
+          result={editing}
+          onClose={() => setEditing(null)}
+        />
+      )}
       {!s.results.length && (
         <Empty
           title="还没有选定插图"
@@ -242,6 +299,130 @@ export function ResultsPage() {
         />
       )}
     </>
+  );
+}
+
+function ResultEditor({ result, onClose }) {
+  const { s, run, notify, uploadFiles, dirty } = useWorkspace();
+  const [form, setForm] = useState({ ...result }),
+    [scenes, setScenes] = useState([]);
+  const [chapter, setChapter] = useState(result.segment);
+  const live = s.results.find((r) => r.id === result.id) || result;
+  useEffect(() => {
+    api("result_scenes")
+      .then(setScenes)
+      .catch((e) => notify(e.message));
+  }, []);
+  function set(key, value) {
+    setForm((f) => ({ ...f, [key]: value }));
+    dirty.current = true;
+  }
+  function close() {
+    if (!dirty.current || window.confirm("放弃未保存的成果编辑？")) {
+      dirty.current = false;
+      onClose();
+    }
+  }
+  return (
+    <div className="modal-shade">
+      <section className="modal" role="dialog" aria-label="编辑成果">
+        <div className="modal-heading">
+          <h2>编辑成果</h2>
+          <button
+            className="icon quiet"
+            aria-label="关闭成果编辑"
+            onClick={close}
+          >
+            <X size={18} />
+          </button>
+        </div>
+        <label>
+          标题
+          <input
+            aria-label="成果标题"
+            value={form.title}
+            onChange={(e) => set("title", e.target.value)}
+          />
+        </label>
+        <label>
+          所属章节
+          <select
+            aria-label="成果所属章节"
+            value={chapter}
+            onChange={(e) => {
+              setChapter(e.target.value);
+              set("scene", "");
+            }}
+          >
+            {s.segments.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          关联情节
+          <select
+            aria-label="成果关联情节"
+            value={form.scene}
+            onChange={(e) => set("scene", e.target.value)}
+          >
+            <option value="">请选择情节</option>
+            {scenes
+              .filter((v) => v.segment === chapter)
+              .map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.title}
+                </option>
+              ))}
+          </select>
+        </label>
+        <label>
+          说明
+          <textarea
+            aria-label="成果说明"
+            rows={3}
+            value={form.description || ""}
+            onChange={(e) => set("description", e.target.value)}
+          />
+        </label>
+        {live.thumbnail && (
+          <img
+            className="result-edit-image"
+            src={live.thumbnail}
+            alt={live.title}
+          />
+        )}
+        <DropZone
+          compact
+          accept=".png,.jpg,.jpeg,.webp"
+          label="替换成果图片（原图保留）"
+          onFiles={async (files) => {
+            if (
+              files[0] &&
+              (await uploadFiles([files[0]], "result_image", result.id))
+            )
+              notify("图片已替换；标题、说明或关联修改仍需保存。");
+          }}
+        />
+        <div className="actions">
+          <button onClick={close}>取消</button>
+          <button
+            className="primary"
+            disabled={!form.scene || !form.title.trim()}
+            onClick={async () => {
+              if (await run("result_edit", form)) {
+                dirty.current = false;
+                onClose();
+              }
+            }}
+          >
+            保存成果修改
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 

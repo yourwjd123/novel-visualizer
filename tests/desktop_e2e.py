@@ -124,7 +124,7 @@ def main():
             )
             try:
                 c = CDP(port)
-                c.wait("document.querySelector('.empty-workspace')")
+                c.wait("document.querySelector('.bookshelf .empty-state')")
                 assert "访客" in c.evaluate(
                     "document.querySelector('.topbar').innerText"
                 )
@@ -136,6 +136,10 @@ def main():
                 c.click("账户 / 登录")
                 c.wait("document.querySelector('.account-list button')")
                 c.evaluate("document.querySelector('.account-list button').click()")
+                c.wait("document.querySelector('.book-cover')")
+                c.evaluate("document.querySelector('.book-cover').click()")
+                c.wait("document.querySelector('.reader-stage')")
+                c.click("进入制作")
                 c.wait("document.querySelector('.workspace-tabs')")
                 c.click("原文与情节", ".workspace-tabs button")
                 c.wait("document.querySelectorAll('.paragraph').length===8")
@@ -184,6 +188,30 @@ def main():
                 c.click("选为成果")
                 c.click("成果集", ".workspace-tabs button")
                 c.wait("document.querySelector('.result-grid .image-hit img')")
+                c.click("编辑", ".result-grid button")
+                c.wait("document.querySelector('[aria-label=\"编辑成果\"]')")
+                c.fill('[aria-label="成果标题"]', "渡口来信（修订）")
+                c.fill('[aria-label="成果说明"]', "桌面编辑验证")
+                c.evaluate(
+                    "(()=>{const bytes=Uint8Array.from(atob("
+                    + json.dumps(external_png.split(",")[1])
+                    + "),c=>c.charCodeAt(0));const dt=new DataTransfer();dt.items.add(new File([bytes],'替换.jpg',{type:'image/jpeg'}));const input=document.querySelector('[aria-label=\"编辑成果\"] input[type=file]');input.files=dt.files;input.dispatchEvent(new Event('change',{bubbles:true}));})()"
+                )
+                c.wait(
+                    "document.querySelector('.toast')?.innerText.includes('图片已替换')"
+                )
+                c.click("保存成果修改")
+                c.wait(
+                    "document.querySelector('.result-grid h3')?.textContent==='渡口来信（修订）'"
+                )
+                c.click("删除", ".result-grid button")
+                c.wait("!document.querySelector('.result-grid .image-card')")
+                c.evaluate(
+                    "[...document.querySelectorAll('details summary')].find(e=>e.textContent==='已删除成果').click()"
+                )
+                c.click("恢复成果")
+                c.wait("document.querySelector('.result-grid .image-card')")
+                c.screenshot(output / "results-edit.png")
                 c.click("原文与情节", ".workspace-tabs button")
                 c.click("视觉资产库", ".workspace-tabs button")
                 c.click("粘贴原文")
@@ -383,6 +411,10 @@ def main():
                 c.wait("document.querySelector('.render-editor textarea')")
                 c.fill(".render-editor textarea", "甲站在渡口，中景。")
                 c.click("AI扩写", ".render-editor button")
+                c.wait(
+                    "document.querySelector('.assistant-tabs .active')?.textContent==='AI 补全'"
+                )
+                assert not c.evaluate("!!document.querySelector('.completion-change')")
                 c.click("生成补全建议", ".assistant-compose button")
                 c.wait("document.querySelector('.completion-change')", 20)
                 c.click("采用选中建议到编辑器")

@@ -23,11 +23,12 @@ import ImagesPage, { ResultsPage, ImageViewer } from "./ImagesPage";
 import SettingsPage from "./SettingsPage";
 import AssetRenderPage from "./RenderWorkspace";
 import Assistant from "./Assistant";
+import ReadingPage, { Bookshelf } from "./ReadingPage";
 
 export default function App() {
   const [s, setState] = useState(null),
     [error, setError] = useState(""),
-    [page, setPage] = useState("assets"),
+    [page, setPage] = useState("bookshelf"),
     [modal, setModal] = useState(null),
     [ai, setAI] = useState({ open: false, node: 0, asset: null }),
     [toast, setToast] = useState(""),
@@ -42,6 +43,7 @@ export default function App() {
   const current = useRef(s),
     pending = useRef(null),
     assistant = useRef(null),
+    readerFlush = useRef(null),
     dirty = useRef(false),
     toastTimer = useRef(null);
   const notify = (text) => {
@@ -80,7 +82,7 @@ export default function App() {
           "account_create",
         ].includes(op)
       )
-        await assistant.current?.flush();
+        await flush();
       const r = await api(op, data);
       if (r?.import_estimate)
         setImportReports((v) => [...v, r.import_estimate]);
@@ -161,6 +163,7 @@ export default function App() {
     return true;
   }
   async function flush() {
+    await readerFlush.current?.();
     await assistant.current?.flush();
   }
   async function navigate(next) {
@@ -172,6 +175,8 @@ export default function App() {
     dirty.current = false;
     await flush();
     setPage(next);
+    if (["bookshelf", "reader"].includes(next))
+      setAI((v) => ({ ...v, open: false }));
     setAssetEdit(null);
     return true;
   }
@@ -258,6 +263,7 @@ export default function App() {
     if (ok) {
       setAI({ open: false, node: 0, asset: null });
       setAssetEdit(null);
+      setPage("bookshelf");
       dirty.current = false;
       return true;
     }
@@ -270,7 +276,7 @@ export default function App() {
         !window.confirm("有尚未保存的编辑，放弃这些输入并关闭吗？")
       )
         return;
-      await assistant.current?.flush();
+      await flush();
       await api("close_ready");
     };
     return () => delete window.__novelvizRequestClose;
@@ -283,6 +289,9 @@ export default function App() {
     run,
     refresh,
     notify,
+    registerReaderFlush: (fn) => {
+      readerFlush.current = fn;
+    },
     page,
     navigate,
     withProject,
@@ -360,7 +369,16 @@ export default function App() {
         )}
         <div className="app-shell">
           <aside className="system-sidebar" aria-label="系统与项目">
-            <div className="brand">
+            <div
+              className="brand"
+              role="button"
+              tabIndex={0}
+              title="返回书架"
+              onClick={() => navigate("bookshelf")}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") navigate("bookshelf");
+              }}
+            >
               <span className="brand-mark">墨</span>
               <span className="side-label">
                 墨境 <small>文本可视化</small>
@@ -398,7 +416,7 @@ export default function App() {
               <small>
                 {s.project ? "当前小说 · 资料保存在本地" : "创建账户后开始操作"}
               </small>
-              {s.progress && (
+              {s.progress && page !== "bookshelf" && (
                 <>
                   <div className="project-progress">
                     <span
@@ -457,29 +475,51 @@ export default function App() {
             </button>
             <div className="sidebar-spacer" />
             <p className="side-label sidebar-note">
-              v0.8.0-beta.1 · 测试版
+              v0.9.0-beta.1 · 测试版
               <br />
               既有文本 → 视觉资产 → 插图
             </p>
           </aside>
           <main className="workspace">
-            <WorkspaceTabs
-              active={page}
-              onSelect={navigate}
-              system={system}
-              onClose={() => {
-                setSystem(null);
-                navigate("source");
-              }}
-            />
+            {!["bookshelf", "reader"].includes(page) && (
+              <WorkspaceTabs
+                active={page}
+                onSelect={navigate}
+                system={system}
+                onClose={() => {
+                  setSystem(null);
+                  navigate("source");
+                }}
+              />
+            )}
             <div
-              className="workspace-content"
+              className={
+                "workspace-content " +
+                (page === "reader" ? "reader-content" : "")
+              }
               id="workspace-content"
-              role="tabpanel"
-              aria-labelledby={"tab-" + page}
+              role={
+                ["bookshelf", "reader"].includes(page) ? "region" : "tabpanel"
+              }
+              aria-label={
+                page === "bookshelf"
+                  ? "书架"
+                  : page === "reader"
+                    ? "阅读"
+                    : undefined
+              }
+              aria-labelledby={
+                ["bookshelf", "reader"].includes(page)
+                  ? undefined
+                  : "tab-" + page
+              }
             >
-              {!s.project &&
-              !["settings", "history", "files"].includes(page) ? (
+              {page === "bookshelf" ? (
+                <Bookshelf />
+              ) : page === "reader" && s.project ? (
+                <ReadingPage key={s.project.id} />
+              ) : !s.project &&
+                !["settings", "history", "files"].includes(page) ? (
                 <Guest page={page} />
               ) : page === "source" ? (
                 <SourcePage />
@@ -508,14 +548,16 @@ export default function App() {
             )}
           </main>
         </div>
-        <button
-          className="ai-launch primary"
-          onClick={() =>
-            ai.open ? setAI((v) => ({ ...v, open: false })) : openConsult()
-          }
-        >
-          ✧ AI 助手{s.busy && <span className="busy-dot" />}
-        </button>
+        {!["bookshelf", "reader"].includes(page) && (
+          <button
+            className="ai-launch primary"
+            onClick={() =>
+              ai.open ? setAI((v) => ({ ...v, open: false })) : openConsult()
+            }
+          >
+            ✧ AI 助手{s.busy && <span className="busy-dot" />}
+          </button>
+        )}
         {s.account && <Assistant ref={assistant} ai={ai} onChange={setAI} />}
         {modal && (
           <div
@@ -567,7 +609,7 @@ export default function App() {
                   onLogout={async () => {
                     if (await switchAccount("logout", {})) {
                       setModal(null);
-                      navigate("source");
+                      navigate("bookshelf");
                     }
                   }}
                 />
@@ -576,12 +618,20 @@ export default function App() {
                   onOpen={async (path) => {
                     await flush();
                     if (await run("project_open", { path })) {
+                      const hadPending = !!pending.current;
                       setAI({ open: false, node: 0, asset: null });
-                      resume();
+                      await resume();
+                      if (!hadPending && ["bookshelf", "reader"].includes(page))
+                        navigate("reader");
                     }
                   }}
                   onCreate={async (name) => {
-                    if (await run("project_create", { name })) resume();
+                    if (await run("project_create", { name })) {
+                      const hadPending = !!pending.current;
+                      await resume();
+                      if (!hadPending && page === "bookshelf")
+                        navigate("reader");
+                    }
                   }}
                 />
               ) : modal.type === "import" ? (
