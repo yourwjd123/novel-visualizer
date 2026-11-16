@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import threading
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -627,11 +628,8 @@ def test_consultation_exact_prefix_summary_only_and_explicit_reference(work):
     )
     assert "甲走进渡口" not in second["context"]
     assert not paths and not second["attachments"]
-    third, _, _, _ = work.prepare_text(
-        7, "追问", mode="consult", reference="明确引用的回答"
-    )
-    assert "明确引用的回答" in third["messages"][0]["content"]
-    assert "第一次回答" not in third["messages"][0]["content"]
+    with pytest.raises(ValueError, match="历史引用"):
+        work.prepare_text(7, "追问", mode="consult", reference="明确引用的回答")
 
 
 def test_completion_has_only_declared_context_and_never_applies_automatically(work):
@@ -913,7 +911,7 @@ def test_recommendation_build_only_selected_and_evidence_normalization(work):
     }
     work.process_task_output(job, json.dumps(output, ensure_ascii=False))
     assert len(work.project.assets()) == 1
-    work.finish_assets([items[0]["id"]])
+    work.finish_assets([items[0]["id"]], confirm_pending=True)
     with pytest.raises(ValueError, match="尚未"):
         work.finish_assets([items[1]["id"]])
 
@@ -980,3 +978,196 @@ def test_plot_optional_asset_fields_do_not_block(work):
     )
     work.process_task_output(job, text)
     assert len(work.project.config["split_drafts"][work.segment]["rows"]) == 1
+
+
+def test_asset_review_and_visual_field_separation_and_export(work, tmp_path):
+    asset = work.save_asset(
+        dict(
+            name="甲",
+            kind="人物",
+            details=dict(
+                face="棕色眼睛",
+                body="高挑",
+                background="父母是教师",
+                relationships="乙是朋友",
+            ),
+        )
+    )
+    work.review_assets([asset["id"]], "已锁定")
+    with pytest.raises(ValueError, match="锁定"):
+        work.save_asset(dict(id=asset["id"], name="新名字"))
+    work.review_assets([asset["id"]], "已确认")
+    work.add_reference(asset["id"], picture(tmp_path / "reference.png"))
+    work.confirm_split(rows())
+    work.project.set_requirements(
+        work.scene, [dict(name="甲", kind="人物", asset_id=asset["id"])]
+    )
+    bundle = work.render_bundle("甲站在渡口，平视中景，柔和侧光。")
+    assert "棕色眼睛" in bundle["text"] and "参考图1" in bundle["text"]
+    assert "父母" not in bundle["text"] and "朋友" not in bundle["text"]
+    work.keys[work.account["id"] + ":test"] = "secret-sentinel"
+    exported = work.export_render_bundle("甲站在渡口，平视中景。", "渡口")
+    from pathlib import Path
+
+    folder = Path(exported["path"])
+    assert (folder / "参考图/参考图1_甲.png").is_file()
+    assert "父母" not in (folder / "生图方案.md").read_text()
+    assert work.export_render_bundle("甲站在渡口。", "渡口")["path"] != str(folder)
+    assert not work.project.jobs()
+
+
+def test_render_final_plan_validation_and_retired_prompt(work):
+    from novelviz.rendering import validate_plan
+
+    for text in ("建议：增加人物", "## 关键缺项：外观", "需要确认人物"):
+        with pytest.raises(ValueError):
+            validate_plan(text)
+    with pytest.raises(ValueError, match="停用"):
+        work.prepare_text(3, "定稿")
+
+
+def test_plot_asset_links_persist_exclusions_and_cast(work):
+    asset = work.save_asset(dict(name="甲", kind="人物", description="黑色上衣"))
+    work.confirm_split(rows())
+    bridge = Bridge(work.store.root)
+    bridge.workspace = work
+    assert any(
+        r.get("asset_id") == asset["id"] for r in work.project.requirements(work.scene)
+    )
+    bridge.dispatch(
+        "scene_assets_edit", dict(scene=work.scene, id=asset["id"], action="remove")
+    )
+    work.map_assets_to_scenes()
+    assert not work.project.requirements(work.scene)
+    bridge.dispatch(
+        "scene_assets_edit", dict(scene=work.scene, id=asset["id"], action="add")
+    )
+    bridge.dispatch("scene_cast", dict(asset=asset["id"], included=False))
+    assert not work.render_state()["rows"]
+    assert len(work.project.requirements(work.scene)) == 1
+    bridge.dispatch("scene_cast", dict(asset=asset["id"], included=True))
+    assert len(work.render_state()["rows"]) == 1
+
+
+def test_prompt_v5_preserves_edits_and_upgrades_untouched():
+    from novelviz.prompts import upgrade_template, default_template
+
+    old = dict(
+        id="scene",
+        node=2,
+        format="text",
+        name="场景插图方案",
+        version="4.0",
+        body="根据当前情节、确认的资产和选定副卡，给一个单张插图方案。简述画面瞬间、实际出镜对象、动作与空间关系、构图和光线。只表现同一时刻，尊重原文，不增加角色或调换道具。仅列会影响制作的关键缺项，不输出长篇分析或默认备选。",
+    )
+    assert upgrade_template(old) == default_template(2)
+    old["body"] += "用户私人规则"
+    assert upgrade_template(old)["body"].endswith("用户私人规则")
+
+
+def test_comfy_reference_numbers_match_actual_upload_and_offline_export(
+    work, tmp_path, monkeypatch
+):
+    first = work.save_asset(
+        dict(name="甲", kind="人物", details=dict(face="圆脸"), review="已确认")
+    )
+    second = work.save_asset(
+        dict(name="乙", kind="人物", details=dict(body="高大"), review="已确认")
+    )
+    work.add_reference(second["id"], picture(tmp_path / "乙.png"))
+    work.confirm_split(rows())
+    work.project.set_requirements(
+        work.scene,
+        [dict(name=a["name"], kind="人物", asset_id=a["id"]) for a in (first, second)],
+    )
+    work.save_connection(
+        dict(
+            id="local-comfy",
+            name="本地",
+            kind="comfy",
+            endpoint="http://127.0.0.1:9999",
+        )
+    )
+    work.store.save_image_defaults(
+        work.account,
+        dict(
+            connection_id="local-comfy",
+            workflow=json.dumps(
+                {"6": {"class_type": "TestNode", "inputs": {"text": "", "image": ""}}}
+            ),
+            mapping=json.dumps(
+                {"prompt": ["6", "text"], "reference_1": ["6", "image"]}
+            ),
+        ),
+    )
+    bridge = Bridge(work.store.root)
+    bridge.workspace = work
+    bridge.confirm = lambda *a: True
+    captured = []
+    uploaded = []
+    monkeypatch.setattr(
+        bridge, "start", lambda job, fn, text: captured.append((job, fn))
+    )
+    monkeypatch.setattr(
+        "novelviz.desktop.upload_comfy",
+        lambda endpoint, path, key: uploaded.append(path) or "uploaded.png",
+    )
+    flows = []
+    monkeypatch.setattr(
+        "novelviz.desktop.comfy_call",
+        lambda endpoint, flow, *a: flows.append(flow) or [],
+    )
+    bridge.dispatch("generate", dict(plan="甲与乙（参考图1）在渡口相遇。"))
+    job, fn = captured[0]
+    fn(threading.Event(), lambda x: None)
+    assert len(uploaded) == 1 and uploaded[0].is_file()
+    assert flows[0]["6"]["inputs"]["image"] == "uploaded.png"
+    assert "乙（参考图1）" in job["prompt"] and "参考图2" not in job["prompt"]
+    exported = work.export_render_bundle("甲与乙（参考图1）在渡口相遇。", "相遇")
+    assert (Path(exported["path"]) / "生图方案.md").read_text() == job["prompt"]
+    with pytest.raises(ValueError, match="编号"):
+        work.render_bundle("甲（参考图2）")
+
+
+def test_asset_variant_render_plans_are_separate_and_can_adopt_reference(
+    work, tmp_path
+):
+    asset = work.save_asset(
+        dict(name="甲", kind="人物", details=dict(face="圆脸"), review="已确认")
+    )
+    work.save_render_plan("甲正面站立。", asset["id"])
+    variant = work.save_variant(
+        asset["id"], "受伤", dict(details=dict(appearance_state="左臂绷带"))
+    )
+    assert work.render_state(asset["id"])["text"] == ""
+    work.save_render_plan("甲左臂缠绷带。", asset["id"])
+    work.select_variant(asset["id"], "base")
+    assert work.render_state(asset["id"])["text"] == "甲正面站立。"
+    work.select_variant(asset["id"], variant["id"])
+    image = picture(work.project.path / "05_生成任务/test.png")
+    work.project.save_job(
+        dict(
+            id="render-variant",
+            created="2026-11-16",
+            status="success",
+            node=4,
+            asset=asset["id"],
+            results=[str(image.relative_to(work.project.path))],
+        )
+    )
+    bridge = Bridge(work.store.root)
+    bridge.workspace = work
+    bridge.dispatch(
+        "candidate_to_reference",
+        dict(
+            asset=asset["id"],
+            variant=variant["id"],
+            path=str(image.relative_to(work.project.path)),
+        ),
+    )
+    assert (
+        work.render_state(asset["id"])["references"][0]["variant"]["id"]
+        == variant["id"]
+    )
+
+    assert not work.project.assets()[0].get("image")

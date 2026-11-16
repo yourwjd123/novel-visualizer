@@ -91,7 +91,7 @@ def text_call(
                 field, [] if field in ("attributes", "states", "missing") else ""
             )
             if isinstance(value, str):
-                value += "（演示补全视觉建议，请人工核对。）"
+                value += " 柔和侧光，主体清晰，背景简洁。"
             return json.dumps(
                 {
                     "changes": [
@@ -150,6 +150,8 @@ def text_call(
                 ensure_ascii=False,
                 indent=2,
             )
+        if params.get("template", {}).get("id") in ("scene", "reference"):
+            return "中景构图，主体位于画面中央，柔和侧光，背景简洁，画面清晰。"
         return (
             "【演示输出 · 未调用模型】\n\n"
             + "此结果仅用于测试对话、确认与导出，不代表真实小说解析。\n\n"

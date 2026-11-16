@@ -2,6 +2,7 @@
 import React, { useRef } from "react";
 const pages = [
   ["assets", "视觉资产库"],
+  ["asset_images", "资产图制作"],
   ["source", "原文与情节"],
   ["images", "场景插图"],
   ["results", "成果集"],

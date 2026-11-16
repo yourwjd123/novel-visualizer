@@ -1837,3 +1837,56 @@ pre {
   flex: 1;
   min-width: 120px;
 }
+
+/* Keep full reference frames visible in cards and editors. */
+.image-card .image-hit img,
+.detail-image,
+.reference-strip img {
+  object-fit: contain;
+  background: var(--panel);
+}
+.render-editor {
+  padding: 20px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  margin: 16px 0;
+}
+.render-editor textarea {
+  width: 100%;
+  min-height: 240px;
+}
+.render-references {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.render-references figure {
+  margin: 0;
+  width: 170px;
+}
+.render-references img {
+  width: 100%;
+  height: 140px;
+  object-fit: contain;
+}
+.render-editor pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.plot-asset-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin: 6px 0;
+}
+.plot-asset-row img {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+}
+.plot-assets {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}

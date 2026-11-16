@@ -21,6 +21,7 @@ import SourcePage from "./SourcePage";
 import AssetsPage, { AssetEditor } from "./AssetsPage";
 import ImagesPage, { ResultsPage, ImageViewer } from "./ImagesPage";
 import SettingsPage from "./SettingsPage";
+import AssetRenderPage from "./RenderWorkspace";
 import Assistant from "./Assistant";
 
 export default function App() {
@@ -35,6 +36,7 @@ export default function App() {
     [system, setSystem] = useState(null),
     [assetEdit, setAssetEdit] = useState(null),
     [large, setLarge] = useState(null),
+    [assetForRender, setAssetForRender] = useState(null),
     [guestDark, setGuestDark] = useState(null);
   const current = useRef(s),
     pending = useRef(null),
@@ -167,6 +169,10 @@ export default function App() {
     await flush();
     setPage(next);
     setAssetEdit(null);
+    return true;
+  }
+  async function openAssetRender(identity) {
+    if (await navigate("asset_images")) setAssetForRender(identity);
   }
   function openAI(node = 0, asset = null, reference = null) {
     withProject(() =>
@@ -272,6 +278,7 @@ export default function App() {
     withProject,
     openAI,
     openCompletion,
+    openAssetRender,
     openConsult,
     modal,
     setModal,
@@ -440,7 +447,7 @@ export default function App() {
             </button>
             <div className="sidebar-spacer" />
             <p className="side-label sidebar-note">
-              v0.6.0-beta.1 · 测试版
+              v0.7.0-beta.1 · 测试版
               <br />
               既有文本 → 视觉资产 → 插图
             </p>
@@ -468,6 +475,8 @@ export default function App() {
                 <SourcePage />
               ) : page === "assets" ? (
                 <AssetsPage />
+              ) : page === "asset_images" ? (
+                <AssetRenderPage initial={assetForRender} />
               ) : page === "images" ? (
                 <ImagesPage />
               ) : page === "results" ? (

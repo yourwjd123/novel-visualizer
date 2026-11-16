@@ -260,9 +260,67 @@ class Bridge(QObject):
         elif op == "select_variant":
             w.select_variant(d["id"], d["variant"], d.get("scene"))
         elif op == "asset_finish":
-            w.finish_assets(d.get("selected", []))
+            w.finish_assets(d.get("selected", []), bool(d.get("confirm_pending")))
         elif op == "save_advice":
             w.save_advice(d.get("text", ""), d.get("items"))
+        elif op == "asset_review":
+            w.review_assets(d["ids"], d["status"])
+        elif op == "render_state":
+            return w.render_state(d.get("asset"), d.get("scene"))
+        elif op == "save_render_plan":
+            return w.save_render_plan(
+                d["text"],
+                d.get("asset"),
+                d.get("scene"),
+                d.get("name"),
+                d.get("annotations"),
+            )
+        elif op == "render_preview":
+            bundle = w.render_bundle(d["text"], d.get("asset"), d.get("scene"))
+            return dict(text=bundle["text"], references=bundle["references"])
+        elif op == "export_render":
+            return w.export_render_bundle(
+                d["text"], d.get("name", ""), d.get("asset"), d.get("scene")
+            )
+        elif op == "scene_assets_edit":
+            w.guard()
+            if not w.project.scene(d["scene"]):
+                raise ValueError("情节不存在")
+            existing = w.project.requirements(d["scene"])
+            identity = d.get("asset", d.get("id"))
+            exclusions = w.project.config.setdefault(
+                "asset_match_exclusions", {}
+            ).setdefault(d["scene"], [])
+            if d["action"] == "remove":
+                if identity:
+                    existing = [r for r in existing if r.get("asset_id") != identity]
+                    if identity not in exclusions:
+                        exclusions.append(identity)
+                elif d.get("slot"):
+                    existing = [r for r in existing if r.get("slot") != d["slot"]]
+                else:
+                    raise ValueError("请指定要移除的资产关联")
+            else:
+                asset = next(a for a in w.project.assets() if a["id"] == identity)
+                if identity in exclusions:
+                    exclusions.remove(identity)
+                if not any(r.get("asset_id") == identity for r in existing):
+                    existing.append(
+                        dict(name=asset["name"], kind=asset["kind"], asset_id=identity)
+                    )
+            w.project.set_requirements(d["scene"], existing)
+            w.project.save_config()
+        elif op == "scene_cast":
+            w.guard()
+            omissions = w.project.config.setdefault(
+                "scene_cast_omissions", {}
+            ).setdefault(w.scene, [])
+            if d["included"]:
+                if d["asset"] in omissions:
+                    omissions.remove(d["asset"])
+            elif d["asset"] not in omissions:
+                omissions.append(d["asset"])
+            w.project.save_config()
         elif op == "save_summary":
             w.save_summary(d.get("text", ""))
         elif op == "asset_candidate":
@@ -369,12 +427,7 @@ class Bridge(QObject):
             w.project.invalidate(w.scene, 2, "本情节资产状态已修改")
             w.project.save_config()
         elif op == "save_prompt":
-            w.require_project()
-            w.project.config.setdefault("image_prompt_drafts", {})[w.scene] = d["text"]
-            w.project.config.setdefault("image_prompt_annotations", {})[w.scene] = (
-                d.get("annotations", [])
-            )
-            w.project.save_config()
+            raise ValueError("独立提示词流程已停用，请在生图工作区编辑最终方案")
         elif op == "node_parameters":
             return w.parameters(self.node(d), strict=False)
         elif op == "node_read":
@@ -408,7 +461,30 @@ class Bridge(QObject):
             w.require_project()
             if not any(d["path"] in j.get("results", []) for j in w.project.jobs()):
                 raise ValueError("候选图片不存在")
-            w.add_reference(d["asset"], w.file(d["path"]))
+            w.guard()
+            original = next(a for a in w.project.assets() if a["id"] == d["asset"])
+            variant = next(
+                (
+                    v
+                    for v in original.get("variants", [])
+                    if v["id"] == d.get("variant")
+                ),
+                None,
+            )
+            if d.get("variant") not in (None, "base") and not variant:
+                raise ValueError("副卡不存在")
+            relative = w.add_reference(
+                d["asset"], w.file(d["path"]), make_primary=variant is None
+            )
+            if variant:
+                w.save_variant(
+                    original["id"],
+                    variant["title"],
+                    variant["data"],
+                    variant_id=variant["id"],
+                    image=relative,
+                )
+
         elif op == "image":
             return w.image(d["path"], large=True)
         elif op == "connection_save":
@@ -707,66 +783,23 @@ class Bridge(QObject):
         )
         if not profile or profile["kind"] not in ("comfy", "image_api"):
             raise ValueError("请在图片模型配置中为此任务选择图片 API 或 ComfyUI 连接")
-        prompt = str(d.get("prompt", "")).strip()
-        if not prompt:
-            raise ValueError("请先填写并确认本次提示词")
-        image_defaults = w.store.image_defaults(w.account)
-        preface = (
-            task_config.get("preface", "")
-            if task_config.get("preface_override", False)
-            else image_defaults.get(
-                "preface", image_defaults.get("generation_rules", "")
-            )
-        )
-        if preface:
-            prompt = preface + "\n\n" + prompt
-        rows = w.project.scene_assets(w.scene) if w.scene and not asset else []
-        issues = [r["name"] + "：" + r["problem"] for r in rows if r["problem"]]
+        plan = str(d.get("plan", d.get("prompt", ""))).strip()
+        bundle = w.render_bundle(plan, asset["id"] if asset else None)
+        prompt = bundle["text"]
+        rows = bundle["state"]["rows"] if not asset else []
+        issues = [r["name"] + "：" + r["problem"] for r in rows if r.get("problem")]
+        if not asset and not rows:
+            issues.append("当前情节尚未关联出镜资产")
         if not asset and (
             not w.scene or w.project.scene(w.scene).get("review", "已确认") != "已确认"
         ):
             raise ValueError("请先确认并选择情节")
-        if not asset and not rows:
-            issues.append("此情节尚未关联资产")
         if issues and not self.confirm(
-            "缺失资产检查", "\n".join(issues) + "\n\n接受这些缺失并继续生成吗？"
+            "缺失资产检查", "\n".join(issues) + "\n接受后继续？"
         ):
             return dict(cancelled=True)
         if not asset:
-            w.context(3)  # Validate the scene still matches its source.
-        overrides = w.project.config.get("scene_overrides", {}).get(w.scene, {})
-        if rows:
-            prompt += "\n\n【本画面关联资产】\n" + "\n".join(
-                (
-                    r["name"]
-                    + "（"
-                    + r["kind"]
-                    + "）："
-                    + (
-                        (r.get("asset") or {}).get(
-                            "description", "档案缺失；依据用户已确认方案"
-                        )
-                    )
-                    + "\n结构化设定："
-                    + json.dumps(
-                        {
-                            k: (r.get("asset") or {}).get(k, [])
-                            for k in ("attributes", "states")
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n采用版本："
-                    + (r.get("asset") or {})
-                    .get("selected_variant", {})
-                    .get("title", "主卡")
-                    + (
-                        "\n本情节状态：" + overrides[r["asset_id"]]
-                        if r.get("asset_id") in overrides
-                        else ""
-                    )
-                )
-                for r in rows
-            )
+            w.context(2)
         key = w.key(cid)
         job = dict(
             id=uid(),
@@ -780,6 +813,10 @@ class Bridge(QObject):
             scene=w.scene,
             asset=asset and asset["id"],
             prompt=prompt,
+            references=[
+                {k: v for k, v in r.items() if k != "thumbnail"}
+                for r in bundle["references"]
+            ],
             connection=copy.deepcopy(profile),
             assets=copy.deepcopy(rows),
             accepted_missing=issues,
@@ -794,16 +831,13 @@ class Bridge(QObject):
             flow = json.loads(config.get("workflow", "{}"))
             mapping = json.loads(config.get("mapping", "{}"))
             refs = []
-            reference_rows = [dict(asset=asset, name=asset["name"])] if asset else rows
             unmapped = []
-            for i, row in enumerate(reference_rows):
-                a = row.get("asset")
-                if a and a.get("image") and w.file(a["image"]).exists():
-                    field = "reference_" + str(i + 1)
-                    if field in mapping:
-                        refs.append((field, w.file(a["image"])))
-                    else:
-                        unmapped.append(a["name"])
+            for ref in bundle["references"]:
+                field = "reference_" + str(ref["number"])
+                if field in mapping:
+                    refs.append((field, w.file(ref["path"])))
+                else:
+                    unmapped.append(ref["name"])
             if unmapped and not self.confirm(
                 "参考图未映射",
                 "这些图片不会上传："
@@ -837,11 +871,7 @@ class Bridge(QObject):
                     profile["endpoint"], bound, dest, cancel, progress, key
                 )
         else:
-            if (
-                asset
-                and asset.get("image")
-                or any(r.get("asset", {}).get("image") for r in rows if r.get("asset"))
-            ) and not self.confirm(
+            if bundle["references"] and not self.confirm(
                 "兼容接口能力",
                 "当前兼容图片接口只支持文生图，不会发送参考图。是否接受后继续？",
             ):
@@ -910,9 +940,6 @@ class Bridge(QObject):
                                 for f in value
                             ],
                         )
-                        if job.get("asset"):
-                            for f in value:
-                                w.add_reference(job["asset"], f)
                     w.project.save_job(job)
             except Exception as failure:
                 error = dict(
@@ -1018,7 +1045,7 @@ class LocalPage(QWebEnginePage):
 class Desktop(QMainWindow):
     def __init__(self, root):
         super().__init__()
-        self.setWindowTitle("墨境 · 小说文本可视化 · v0.6.0-beta.1 测试版")
+        self.setWindowTitle("墨境 · 小说文本可视化 · v0.7.0-beta.1 测试版")
         self.bridge = Bridge(root, self)
         self.view = QWebEngineView(self)
         page = LocalPage(self.view)

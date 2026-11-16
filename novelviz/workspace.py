@@ -14,6 +14,7 @@ import shutil
 from pathlib import Path
 
 from .tasks import TaskMixin
+from .rendering import RenderMixin, visual_text
 from . import credentials
 from .connections import clean_profile, credential_id
 from .prompts import (
@@ -27,7 +28,7 @@ from .prompts import (
 from .storage import DEFAULTS, NODES, Project, Store, now, redact, safe_name, uid
 
 
-class Workspace(TaskMixin):
+class Workspace(RenderMixin, TaskMixin):
     def __init__(self, root):
         self.store = Store(root, create_default=False)
         self.account = None
@@ -236,6 +237,10 @@ class Workspace(TaskMixin):
             project=p.meta,
             progress=p.progress(),
             segments=p.segments(),
+            assets_created=p.config.get("assets_created", {}).get(self.segment, []),
+            scene_variant_choices_all=copy.deepcopy(
+                p.config.get("scene_variant_selections", {})
+            ),
             asset_ready=self.assets_ready() if self.segment else False,
             asset_advice=copy.deepcopy(
                 p.config.get("asset_advice", {}).get(self.segment, {})
@@ -259,6 +264,8 @@ class Workspace(TaskMixin):
             asset_trash=[
                 a for a in p.assets(include_archived=True) if a.get("archived")
             ],
+            cast_omissions=p.config.get("scene_cast_omissions", {}).get(self.scene, []),
+            render_plan=self.render_state() if self.scene else {},
             task_outputs=copy.deepcopy(
                 p.config.get("task_outputs", {}).get(self.scene, {})
             ),
@@ -281,6 +288,9 @@ class Workspace(TaskMixin):
             a = copy.deepcopy(a)
             a["effective"] = p.effective_asset(a, self.segment)
             a["thumbnail"] = self.image(a.get("image"))
+            a["effective"]["thumbnail"] = self.image(a["effective"].get("image"))
+            for variant in a.get("variants", []):
+                variant["thumbnail"] = self.image(variant.get("image"))
             a["images"] = a.get("images", [])
             a["uses"] = [
                 s[0]
@@ -295,11 +305,6 @@ class Workspace(TaskMixin):
                     requirement["asset"].get("image")
                 )
         result["overrides"] = p.config.get("scene_overrides", {}).get(self.scene, {})
-        result["prompt"] = p.config.get("image_prompt_drafts", {}).get(self.scene, "")
-        if not result["prompt"] and self.scene:
-            final = p.load_node(self.scene, 3)
-            if final["status"] == "已确认":
-                result["prompt"] = final["final"]
         for job_index, j in enumerate(p.jobs()):
             record = {
                 k: v
@@ -489,6 +494,8 @@ class Workspace(TaskMixin):
             "evidence",
             "missing",
             "notes",
+            "details",
+            "legacy_description",
             "aliases",
             "priority",
             "priority_reason",
@@ -500,7 +507,24 @@ class Workspace(TaskMixin):
             original
             or dict(source="用户自定", review="待确认", description="", images=[])
         )
+        if (
+            original
+            and original.get("review") == "已锁定"
+            and any(k in data and data[k] != original.get(k) for k in fields)
+        ):
+            raise ValueError("资产已锁定，请先解锁再修改")
         record.update({k: v for k, v in data.items() if k in fields})
+        if "details" in data:
+            from .rendering import FIELDS
+
+            if not isinstance(data["details"], dict) or any(
+                k not in dict(FIELDS.get(record["kind"], [])) or not isinstance(v, str)
+                for k, v in data["details"].items()
+            ):
+                raise ValueError("分类资产字段无效")
+            if original and not original.get("details"):
+                record.setdefault("legacy_description", original.get("description", ""))
+            record["description"] = visual_text(record)
         if record.get("priority", "建议") not in ("核心", "重要", "建议", "可选择"):
             raise ValueError("资产等级无效")
         if self.segment and "priority" in data:
@@ -517,7 +541,7 @@ class Workspace(TaskMixin):
             self.map_assets_to_scenes()
         return saved
 
-    def add_reference(self, asset_id, path):
+    def add_reference(self, asset_id, path, make_primary=True):
         self.require_project()
         a = next((a for a in self.project.assets() if a["id"] == asset_id), None)
         if not a:
@@ -535,8 +559,10 @@ class Workspace(TaskMixin):
         a["images"].append(
             dict(id=uid(), path=relative, created=now(), source="用户导入")
         )
-        a["image"] = relative
+        if make_primary:
+            a["image"] = relative
         self.project.save_asset(a)
+        return relative
 
     def reference_action(self, asset_id, path, action):
         self.require_project()
@@ -704,8 +730,28 @@ class Workspace(TaskMixin):
                 "split_depth", "中 · 连续情节"
             )
         elif asset:
+            effective = self.project.effective_asset(
+                next(a for a in self.project.assets() if a["id"] == asset), self.segment
+            )
+            effective = (
+                dict(
+                    id=effective["id"],
+                    name=effective["name"],
+                    kind=effective["kind"],
+                    description=visual_text(effective),
+                    selected_variant=effective.get("selected_variant"),
+                    review=effective.get("review"),
+                )
+                if node == 5
+                else effective
+            )
             text += "\n【当前资产】" + json.dumps(
-                next(a for a in self.project.assets() if a["id"] == asset),
+                effective
+                if node == 5
+                else self.project.effective_asset(
+                    next(a for a in self.project.assets() if a["id"] == asset),
+                    self.segment,
+                ),
                 ensure_ascii=False,
             )
         elif scene:
@@ -726,8 +772,26 @@ class Workspace(TaskMixin):
                 ensure_ascii=False,
             )
             related = self.project.scene_assets(self.scene)
+            if node == 2:
+                omitted = self.project.config.get("scene_cast_omissions", {}).get(
+                    self.scene, []
+                )
+                related = [r for r in related if r.get("asset_id") not in omitted]
             for item in related:
                 if item.get("asset"):
+                    if node == 2:
+                        effective = item["asset"]
+                        item["asset"] = {
+                            k: effective.get(k)
+                            for k in (
+                                "id",
+                                "name",
+                                "kind",
+                                "review",
+                                "selected_variant",
+                            )
+                        }
+                        item["asset"]["description"] = visual_text(effective)
                     item["asset"] = {
                         k: v
                         for k, v in item["asset"].items()
@@ -739,6 +803,7 @@ class Workspace(TaskMixin):
                             "description",
                             "review",
                             "attributes",
+                            "details",
                             "states",
                             "evidence",
                             "missing",
@@ -768,6 +833,8 @@ class Workspace(TaskMixin):
 
     def apply_output(self, node, text, asset=None, selected=None):
         self.require_project()
+        if node == 3:
+            raise ValueError("独立提示词流程已停用，请保存最终生图方案")
         if node == 0:
             rows = validate_scenes(
                 parse_object(text), len(self.project.paragraphs(self.segment))
@@ -835,11 +902,6 @@ class Workspace(TaskMixin):
                 output["status"] = "已确认"
                 self.project.save_config()
             self.project.invalidate_dependents(scope, node, self.segment)
-            if node == 3 and not asset:
-                self.project.config.setdefault("image_prompt_drafts", {})[
-                    self.scene
-                ] = text
-                self.project.save_config()
 
     def save_connection(self, profile, key=None, remember=False):
         self.require_account()

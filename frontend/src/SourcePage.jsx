@@ -32,11 +32,15 @@ export default function SourcePage() {
   );
   const sourceRef = useRef(null);
   const draft = s.drafts?.[s.segment];
-  const signature = JSON.stringify(draft?.rows || s.scenes);
+  const signature = JSON.stringify([draft?.rows, s.scenes]);
   useEffect(() => {
     setRows(
       copy(draft?.rows || s.scenes || []).map((r) => ({
         ...r,
+        required_assets:
+          s.scenes.find((v) => v.id === r.id)?.required_assets ||
+          r.required_assets ||
+          [],
         id: r.id || freshId(),
         review: r.review || (draft ? "候选" : "已确认"),
       })),
@@ -52,6 +56,10 @@ export default function SourcePage() {
       setRows(
         copy(draft?.rows || s.scenes || []).map((r) => ({
           ...r,
+          required_assets:
+            s.scenes.find((v) => v.id === r.id)?.required_assets ||
+            r.required_assets ||
+            [],
           id: r.id || freshId(),
           review: r.review || (draft ? "候选" : "已确认"),
         })),
@@ -666,23 +674,124 @@ export default function SourcePage() {
                           {row.match_ambiguities.join("、")}
                         </p>
                       )}
-                      <div className="tags">
-                        {(row.required_assets || []).map((a, n) => (
-                          <button
-                            className="asset-tag"
-                            key={n}
-                            disabled={!a.asset_id}
-                            onClick={() => {
-                              const asset = s.assets.find(
-                                (v) => v.id === a.asset_id,
-                              );
-                              if (asset) setAssetEdit(asset);
-                              else notify("资产档案缺失，可在资产库补建或恢复");
-                            }}
-                          >
-                            {a.name}
-                          </button>
-                        ))}
+                      <div className="plot-assets">
+                        <small>关联资产（关联不等于实际出镜）</small>
+                        {(row.required_assets || []).map((a, n) => {
+                          const asset = s.assets.find(
+                            (v) => v.id === a.asset_id,
+                          );
+                          const selection =
+                            s.scene_variant_choices_all?.[row.id]?.[
+                              asset?.id
+                            ] || "auto";
+                          const effective =
+                            selection === "auto"
+                              ? asset?.effective
+                              : selection === "base"
+                                ? asset
+                                : asset?.variants?.find(
+                                    (v) => v.id === selection,
+                                  );
+                          return (
+                            <div className="plot-asset-row" key={n}>
+                              {effective?.thumbnail && (
+                                <img src={effective.thumbnail} alt="" />
+                              )}
+                              <button
+                                onClick={() =>
+                                  asset
+                                    ? setAssetEdit(asset)
+                                    : notify("资产缺失，请补建")
+                                }
+                              >
+                                {a.name}
+                              </button>
+                              {asset && (
+                                <select
+                                  aria-label={"情节副卡 " + a.name}
+                                  value={
+                                    s.scene_variant_choices_all?.[row.id]?.[
+                                      asset.id
+                                    ] || "auto"
+                                  }
+                                  onChange={(e) =>
+                                    run("select_variant", {
+                                      id: asset.id,
+                                      variant: e.target.value,
+                                      scene: row.id,
+                                    })
+                                  }
+                                >
+                                  <option value="auto">跟随本章</option>
+                                  <option value="base">主卡</option>
+                                  {(asset.variants || []).map((v) => (
+                                    <option key={v.id} value={v.id}>
+                                      {v.title}
+                                    </option>
+                                  ))}
+                                </select>
+                              )}
+                              <button
+                                onClick={() =>
+                                  run("scene_assets_edit", {
+                                    scene: row.id,
+                                    id: a.asset_id,
+                                    slot: a.slot,
+                                    action: "remove",
+                                  })
+                                }
+                              >
+                                移除关联
+                              </button>
+                            </div>
+                          );
+                        })}
+                        {s.scenes.some((v) => v.id === row.id) ? (
+                          <div className="actions">
+                            <select
+                              aria-label="新增资产关联"
+                              value=""
+                              onChange={(e) =>
+                                e.target.value &&
+                                run("scene_assets_edit", {
+                                  scene: row.id,
+                                  id: e.target.value,
+                                  action: "add",
+                                })
+                              }
+                            >
+                              <option value="">关联已有资产…</option>
+                              {s.assets
+                                .filter(
+                                  (a) =>
+                                    !(row.required_assets || []).some(
+                                      (r) => r.asset_id === a.id,
+                                    ),
+                                )
+                                .map((a) => (
+                                  <option key={a.id} value={a.id}>
+                                    {a.name}
+                                  </option>
+                                ))}
+                            </select>
+                            <button
+                              onClick={() =>
+                                setAssetEdit({
+                                  name: "",
+                                  kind: "人物",
+                                  description: "",
+                                  source: "用户自定",
+                                  review: "待确认",
+                                  _linkScene: row.id,
+                                })
+                              }
+                            >
+                              新建并关联
+                            </button>
+                          </div>
+                        ) : (
+                          <p className="small muted">确认情节后可管理关联。</p>
+                        )}
                       </div>
                     </>
                   )}

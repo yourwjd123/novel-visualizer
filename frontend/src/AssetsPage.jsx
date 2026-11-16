@@ -14,8 +14,16 @@ import ImageCard from "./components/ImageCard";
 import { api } from "./api";
 
 export default function AssetsPage() {
-  const { s, run, notify, setAssetEdit, setLarge, openAI, withProject } =
-    useWorkspace();
+  const {
+    s,
+    run,
+    notify,
+    setAssetEdit,
+    setLarge,
+    openAI,
+    withProject,
+    openAssetRender,
+  } = useWorkspace();
   const [filter, setFilter] = useState("全部"),
     [search, setSearch] = useState(""),
     [view, setView] = useState("records"),
@@ -24,9 +32,25 @@ export default function AssetsPage() {
     [selected, setSelected] = useState(new Set()),
     [sort, setSort] = useState("等级");
   const [adviceOpen, setAdviceOpen] = useState(false);
+  const adviceJob = s.jobs.find(
+    (j) =>
+      j.node === 1 &&
+      j.asset_phase === "advice" &&
+      j.segment === s.segment &&
+      j.status === "success",
+  )?.id;
+  const seenAdvice = useRef({ segment: s.segment, job: adviceJob });
   useEffect(() => {
-    if (s.asset_advice?.raw) setAdviceOpen(true);
-  }, [s.segment, s.asset_advice?.raw]);
+    if (
+      seenAdvice.current.segment === s.segment &&
+      adviceJob &&
+      seenAdvice.current.job !== adviceJob &&
+      !s.asset_ready
+    )
+      setAdviceOpen(true);
+    else if (seenAdvice.current.segment !== s.segment) setAdviceOpen(false);
+    seenAdvice.current = { segment: s.segment, job: adviceJob };
+  }, [s.segment, adviceJob]);
   const [adviceSelection, setAdviceSelection] = useState(new Set()),
     [adviceItems, setAdviceItems] = useState([]),
     [adviceRaw, setAdviceRaw] = useState("");
@@ -164,10 +188,13 @@ export default function AssetsPage() {
             onClick={() => {
               if (
                 window.confirm(
-                  "确认本章资产整理完成？未选条目不建卡，也可确认本章无需新增资产。",
+                  "确认本章资产整理完成，并将本章待确认资产批量确认为已确认？未选条目不建卡。",
                 )
               )
-                run("asset_finish", { selected: [...adviceSelection] });
+                run("asset_finish", {
+                  selected: [...adviceSelection],
+                  confirm_pending: true,
+                });
             }}
           >
             完成本章资产整理
@@ -200,7 +227,11 @@ export default function AssetsPage() {
                   <input
                     aria-label={"勾选 " + item.name}
                     type="checkbox"
-                    checked={adviceSelection.has(item.id)}
+                    disabled={(s.assets_created || []).includes(item.id)}
+                    checked={
+                      adviceSelection.has(item.id) &&
+                      !(s.assets_created || []).includes(item.id)
+                    }
                     onChange={(e) =>
                       setAdviceSelection((v) => {
                         const n = new Set(v);
@@ -278,7 +309,12 @@ export default function AssetsPage() {
                       }
                     />
                   )}
-                  <span>{item.reason}</span>
+                  <span>
+                    {(s.assets_created || []).includes(item.id)
+                      ? "已建卡 · "
+                      : ""}
+                    {item.reason}
+                  </span>
                   <button
                     onClick={() =>
                       setAdviceItems((v) => v.filter((_, j) => j !== i))
@@ -306,7 +342,12 @@ export default function AssetsPage() {
                   手工增加建卡建议
                 </button>
                 <button
-                  disabled={s.busy || !adviceSelection.size}
+                  disabled={
+                    s.busy ||
+                    ![...adviceSelection].some(
+                      (id) => !(s.assets_created || []).includes(id),
+                    )
+                  }
                   onClick={async () => {
                     if (
                       !(await run("save_advice", {
@@ -319,7 +360,9 @@ export default function AssetsPage() {
                     await run("send", {
                       node: 1,
                       asset_phase: "build",
-                      selected: [...adviceSelection],
+                      selected: [...adviceSelection].filter(
+                        (id) => !(s.assets_created || []).includes(id),
+                      ),
                       message: "仅为用户勾选项建立简洁档案。",
                     });
                   }}
@@ -527,11 +570,36 @@ export default function AssetsPage() {
             </details>
           )}
           <h2 className="section-heading">资产档案</h2>
+          <div className="actions">
+            <button onClick={() => setSelected(new Set(rows.map((a) => a.id)))}>
+              全选当前资产
+            </button>
+            <button onClick={() => setSelected(new Set())}>取消选择</button>
+            {["待确认", "已确认", "已锁定"].map((status) => (
+              <button
+                key={status}
+                disabled={!selected.size || s.busy}
+                onClick={() =>
+                  run("asset_review", { ids: [...selected], status })
+                }
+              >
+                批量设为{status}
+              </button>
+            ))}
+          </div>
           <div className="asset-grid">
             {rows.map((a) => (
               <ImageCard
                 key={a.id}
                 image={a.thumbnail}
+                selected={selected.has(a.id)}
+                onSelect={() =>
+                  setSelected((v) => {
+                    const n = new Set(v);
+                    n.has(a.id) ? n.delete(a.id) : n.add(a.id);
+                    return n;
+                  })
+                }
                 title={a.name}
                 subtitle={a.description?.slice(0, 80) || "视觉设定待填写"}
                 badge={a.image ? "主参考图" : "待补参考图"}
@@ -553,6 +621,30 @@ export default function AssetsPage() {
                   >
                     {a.review}
                   </span>
+                  <button
+                    onClick={() =>
+                      run("asset_review", {
+                        ids: [a.id],
+                        status: a.review === "已确认" ? "待确认" : "已确认",
+                      })
+                    }
+                  >
+                    {a.review === "已锁定"
+                      ? "解锁并确认"
+                      : a.review === "已确认"
+                        ? "取消确认"
+                        : "确认"}
+                  </button>
+                  <button
+                    onClick={() =>
+                      run("asset_review", { ids: [a.id], status: "已锁定" })
+                    }
+                  >
+                    锁定
+                  </button>
+                  <button onClick={() => openAssetRender(a.id)}>
+                    制作资产图
+                  </button>
                 </div>
                 <label>
                   本章采用
@@ -761,6 +853,24 @@ export default function AssetsPage() {
   );
 }
 
+export const assetFields = {
+  人物: [
+    ["face", "面容"],
+    ["body", "体型"],
+    ["appearance_state", "外观与状态"],
+    ["background", "背景信息"],
+    ["relationships", "关系"],
+  ],
+  场景: [
+    ["scene_description", "场景描述"],
+    ["plot_context", "相关情节"],
+  ],
+  道具: [
+    ["shape", "外形描述"],
+    ["plot_context", "相关情节"],
+  ],
+};
+
 export function AssetEditor({ asset, onClose }) {
   const {
     s,
@@ -771,10 +881,12 @@ export function AssetEditor({ asset, onClose }) {
     openAI,
     openCompletion,
     dirty,
+    openAssetRender,
   } = useWorkspace();
   const [form, setForm] = useState(
       copy({
         ...asset,
+        details: asset.details,
         priority:
           asset.chapter_levels?.[s.segment]?.priority ||
           (asset.chapter_levels ? "建议" : asset.priority) ||
@@ -810,7 +922,11 @@ export function AssetEditor({ asset, onClose }) {
         .catch((e) => notify(e.message));
   }, [live.revision]);
   function set(key, value) {
-    setForm((f) => ({ ...f, [key]: value }));
+    if (key === "kind") {
+      if (!window.confirm("更改分类后将清空本次编辑中的分类字段，继续吗？"))
+        return;
+      setForm((f) => ({ ...f, kind: value, details: {} }));
+    } else setForm((f) => ({ ...f, [key]: value }));
     dirty.current = true;
   }
   async function save() {
@@ -841,6 +957,12 @@ export function AssetEditor({ asset, onClose }) {
     if (r) {
       dirty.current = false;
       notify("资产已保存；关联方案会标记待复核");
+      if (asset._linkScene)
+        await run("scene_assets_edit", {
+          scene: asset._linkScene,
+          id: r.id,
+          action: "add",
+        });
       onClose();
     }
   }
@@ -852,6 +974,19 @@ export function AssetEditor({ asset, onClose }) {
   };
   return (
     <aside className="asset-editor" aria-label="资产编辑详情">
+      {live.review === "已锁定" && (
+        <p className="notice">
+          资产已锁定。
+          <button
+            onClick={async () => {
+              await run("asset_review", { ids: [asset.id], status: "已确认" });
+              setForm((f) => ({ ...f, review: "已确认" }));
+            }}
+          >
+            解锁以编辑
+          </button>
+        </p>
+      )}
       <div className="drawer-heading">
         <div>
           <span className="eyebrow">{form.kind}资产档案</span>
@@ -956,50 +1091,69 @@ export function AssetEditor({ asset, onClose }) {
           } catch {
             return notify("先修正结构化属性 JSON");
           }
-          const snapshot = { ...form, ...structured, type: "asset" };
-          openCompletion(snapshot, ["description"], (changes, original) => {
-            const current = latest.current;
-            let parsed;
-            try {
-              parsed = JSON.parse(current.structure);
-            } catch {
-              return false;
-            }
-            if (
-              changes.some(
-                (c) =>
-                  JSON.stringify({ ...current.form, ...parsed }[c.field]) !==
-                  JSON.stringify(original[c.field]),
-              )
-            ) {
-              notify("目标字段已变化，请重新补全，避免覆盖新编辑。");
-              return false;
-            }
-            const patch = {},
-              annotations = [...(current.form.completion_annotations || [])];
-            for (const c of changes) {
-              if (["attributes", "states", "missing"].includes(c.field))
-                parsed[c.field] = c.value;
-              else patch[c.field] = c.value;
-              annotations.push({
-                field: c.field,
-                source: "AI建议",
-                previous_source: current.form.source,
-                reason: c.reason,
-                time: new Date().toISOString(),
-              });
-            }
-            setForm((f) => ({
-              ...f,
-              ...patch,
-              source: changes.some((c) => c.field === "description")
-                ? "用户自定"
-                : f.source,
-              completion_annotations: annotations,
-            }));
-            setStructure(JSON.stringify(parsed, null, 2));
-            dirty.current = true;
-          });
+          const snapshot = {
+            ...form,
+            ...structured,
+            ...form.details,
+            type: "asset",
+          };
+          openCompletion(
+            snapshot,
+            assetFields[form.kind].map(([k]) => k),
+            (changes, original) => {
+              const current = latest.current;
+              let parsed;
+              try {
+                parsed = JSON.parse(current.structure);
+              } catch {
+                return false;
+              }
+              if (
+                changes.some(
+                  (c) =>
+                    JSON.stringify(
+                      { ...current.form, ...parsed, ...current.form.details }[
+                        c.field
+                      ],
+                    ) !== JSON.stringify(original[c.field]),
+                )
+              ) {
+                notify("目标字段已变化，请重新补全，避免覆盖新编辑。");
+                return false;
+              }
+              const patch = {},
+                annotations = [...(current.form.completion_annotations || [])];
+              for (const c of changes) {
+                if (["attributes", "states", "missing"].includes(c.field))
+                  parsed[c.field] = c.value;
+                else if (
+                  assetFields[current.form.kind].some(([k]) => k === c.field)
+                )
+                  patch.details = {
+                    ...(patch.details || current.form.details),
+                    [c.field]: c.value,
+                  };
+                else patch[c.field] = c.value;
+                annotations.push({
+                  field: c.field,
+                  source: "AI建议",
+                  previous_source: current.form.source,
+                  reason: c.reason,
+                  time: new Date().toISOString(),
+                });
+              }
+              setForm((f) => ({
+                ...f,
+                ...patch,
+                source: changes.some((c) => c.field === "description")
+                  ? "用户自定"
+                  : f.source,
+                completion_annotations: annotations,
+              }));
+              setStructure(JSON.stringify(parsed, null, 2));
+              dirty.current = true;
+            },
+          );
         }}
       >
         AI补全
@@ -1036,15 +1190,24 @@ export function AssetEditor({ asset, onClose }) {
           含用户采纳的 AI 建议；不代表原文明确。请核对后保存。
         </p>
       )}
-      <label>
-        视觉设定
-        <textarea
-          rows={5}
-          value={form.description}
-          onChange={(e) => set("description", e.target.value)}
-          placeholder="记录外貌、服装、环境结构或道具特征；未知信息保持未知"
-        />
-      </label>
+      {!asset.details && asset.description && (
+        <details>
+          <summary>旧版描述（请分类整理；原文保留）</summary>
+          <p>{asset.description}</p>
+        </details>
+      )}
+      {assetFields[form.kind].map(([key, label]) => (
+        <label key={key}>
+          {label}
+          <textarea
+            rows={3}
+            value={form.details?.[key] || ""}
+            onChange={(e) =>
+              set("details", { ...form.details, [key]: e.target.value })
+            }
+          />
+        </label>
+      ))}
       <label>
         来源
         <select
@@ -1111,37 +1274,18 @@ export function AssetEditor({ asset, onClose }) {
               </div>
             ))}
           </div>
-          <div className="actions">
-            <button
-              disabled={s.busy}
-              onClick={() =>
-                run("send", {
-                  node: 5,
-                  asset: asset.id,
-                  message: "依据此资产生成参考图方案，仅输出单轮建议。",
-                })
+          <button
+            onClick={async () => {
+              if (dirty.current) {
+                notify("请先保存资产再进入制作工作区");
+                return;
               }
-            >
-              生成设定图方案
-            </button>
-            <button
-              disabled={s.busy}
-              onClick={async () => {
-                if (!form.description.trim()) {
-                  notify("请先填写资产描述");
-                  return;
-                }
-                const text = window.prompt(
-                  "确认本次参考图提示词（可修改）",
-                  `为${form.name}制作${form.kind}参考图。${form.description}。保留明确特征，不增加未经确认的设定。`,
-                );
-                if (text) run("generate", { asset: asset.id, prompt: text });
-              }}
-            >
-              <ImagePlus size={14} />
-              生成参考图
-            </button>
-          </div>
+              onClose();
+              await openAssetRender(asset.id);
+            }}
+          >
+            进入资产图制作工作区
+          </button>
         </>
       ) : (
         <p className="muted small">先保存档案，再添加参考图或讨论。</p>

@@ -10,10 +10,14 @@ export default function PromptManager({ onClose }) {
     ["image", "默认生图前置提示词"],
     ["advice", "第一轮：建卡建议"],
     ["completion", "AI补全固定指导"],
-    ...s.nodes.flatMap((name, n) => [
-      ["task:" + n, "任务模板：" + name],
-      ["prefix:" + n, "节点前置：" + name],
-    ]),
+    ...s.nodes.flatMap((name, n) =>
+      n === 3
+        ? [["prefix:" + n, "方案扩写前置提示词"]]
+        : [
+            ["task:" + n, "任务模板：" + name],
+            ["prefix:" + n, "节点前置：" + name],
+          ],
+    ),
   ];
   function select(key) {
     setScope(key);

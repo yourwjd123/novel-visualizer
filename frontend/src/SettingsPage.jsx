@@ -861,7 +861,7 @@ export default function SettingsPage() {
           <div className="separated">
             <h2>测试版本与许可</h2>
             <p className="muted small prose">
-              v0.6.0-beta.1 · GPL-3.0。UI 标签交互与纸墨基础参考
+              v0.7.0-beta.1 · GPL-3.0。UI 标签交互与纸墨基础参考
               Pagekin；视觉资产卡参考 Story Asset
               Studio（MIT）。对应版权和完整许可随源码提供。此应用只做已有文本可视化，不提供小说创作功能。
             </p>

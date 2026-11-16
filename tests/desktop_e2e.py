@@ -168,17 +168,18 @@ def main():
                 c.click("恢复", ".image-card button")
                 c.wait("document.querySelectorAll('.image-card').length===0")
                 c.click("场景插图", ".workspace-tabs button")
-                c.wait("document.querySelector('.shot-toolbar select')")
+                c.wait("document.querySelector('.scene-selector')")
                 value = c.evaluate(
-                    "[...document.querySelector('.shot-toolbar select').options].find(o=>o.text==='渡口来信').value"
+                    "[...document.querySelector('.scene-selector').options].find(o=>o.text==='渡口来信').value"
                 )
-                c.fill(".shot-toolbar select", value)
-                c.wait("document.querySelector('.hero-image img')?.naturalWidth>0")
+                c.fill(".scene-selector", value)
+                c.wait(
+                    "document.querySelector('.result-grid .image-hit img')?.naturalWidth>0"
+                )
                 c.screenshot(output / "images.png")
                 c.click("选为成果")
-                c.wait(
-                    "document.querySelector('.under-image').innerText.includes('已选为成果')"
-                )
+                c.click("成果集", ".workspace-tabs button")
+                c.wait("document.querySelector('.result-grid .image-hit img')")
                 c.click("原文与情节", ".workspace-tabs button")
                 c.click("导入下一片段")
                 c.wait("document.querySelector('.modal textarea')")
@@ -235,6 +236,15 @@ def main():
                 c.wait(
                     "document.querySelector('.asset-workflow').innerText.includes('已完成')"
                 )
+                c.evaluate("document.querySelector('.asset-grid .image-check').click()")
+                c.click("批量设为已锁定")
+                c.wait(
+                    "document.querySelector('.asset-grid .image-card').innerText.includes('已锁定')"
+                )
+                c.click("批量设为已确认")
+                c.wait(
+                    "document.querySelector('.asset-grid .image-card').innerText.includes('已确认')"
+                )
                 c.click("原文与情节", ".workspace-tabs button")
                 assert (
                     c.evaluate("document.querySelectorAll('.scene-card').length") == 0
@@ -246,7 +256,7 @@ def main():
                 )
                 c.click("确认全部情节", ".page-heading button")
                 c.wait(
-                    "document.querySelector('.scene-card .tags').innerText.includes('甲')"
+                    "document.querySelector('.scene-card .plot-assets').innerText.includes('甲')"
                 )
                 c.evaluate("document.querySelectorAll('.scene-card')[1].click()")
                 c.wait(
@@ -266,7 +276,9 @@ def main():
                 c.wait("document.querySelectorAll('.scene-card').length===2")
                 c.click("撤销调整")
                 c.wait("document.querySelectorAll('.scene-card').length===3")
-                c.evaluate("document.querySelector('.scene-card .asset-tag').click()")
+                c.evaluate(
+                    "document.querySelector('.scene-card .plot-asset-row button').click()"
+                )
                 c.wait("document.querySelector('.asset-editor')")
                 c.evaluate(
                     "document.querySelector('[aria-label=\"关闭资产详情\"]').click()"
@@ -317,6 +329,9 @@ def main():
                 c.wait(
                     "[...document.querySelectorAll('.asset-grid .image-card')].some(e=>e.innerText.includes('甲'))"
                 )
+                assert not c.evaluate(
+                    "!!document.querySelector('[aria-label=\"建卡建议选择\"]')"
+                )
                 c.evaluate(
                     "[...document.querySelectorAll('.asset-grid .image-card')].find(e=>e.innerText.includes('甲')).querySelector('.image-hit').click()"
                 )
@@ -336,7 +351,7 @@ def main():
                 )
                 c.click("采用选中建议到编辑器")
                 c.wait(
-                    "document.querySelector('.asset-editor textarea').value.includes('演示补全')"
+                    "document.querySelector('.asset-editor textarea').value.includes('柔和侧光')"
                 )
                 c.click("保存资产修改", ".asset-editor button")
                 c.wait("!document.querySelector('.asset-editor')")
@@ -353,28 +368,41 @@ def main():
                     "[...document.querySelectorAll('.asset-grid .image-card')].some(e=>e.innerText.includes('甲'))"
                 )
                 c.click("场景插图", ".workspace-tabs button")
-                c.wait("document.querySelector('.shot-toolbar')")
-                c.click("查看 / 编辑提示词")
-                c.fill(".prompt-editor textarea", "当前插图提示词")
-                c.click("AI补全", ".prompt-editor button")
+                c.wait("document.querySelector('.render-editor textarea')")
+                c.fill(".render-editor textarea", "甲站在渡口，中景。")
+                c.click("AI扩写", ".render-editor button")
                 c.click("生成补全建议", ".assistant-compose button")
                 c.wait("document.querySelector('.completion-change')", 20)
                 c.click("采用选中建议到编辑器")
                 c.wait(
-                    "document.querySelector('.prompt-editor textarea').value.includes('演示补全')"
+                    "document.querySelector('.render-editor textarea').value.includes('柔和侧光')"
                 )
-                c.click("保存提示词", ".prompt-editor button")
-                c.click("生成提示词", ".shot-toolbar button")
-                c.wait("document.querySelector('.task-result pre')", 20)
+                c.click("保存生图方案", ".render-editor button")
+                c.click("保存生图资产到本地", ".render-editor button")
+                c.wait(
+                    "[...document.querySelectorAll('.render-editor button')].some(b=>b.textContent==='打开素材文件夹')"
+                )
+                c.click("生成生图方案", ".render-editor button")
+                c.wait("document.querySelector('.render-proposal pre')", 20)
                 c.evaluate(
                     "document.querySelector('[aria-label=\"收起 AI 助手\"]').click()"
                 )
-                c.click("载入提示词编辑器")
+                c.click("载入生成方案")
                 c.wait(
-                    "document.querySelector('.prompt-editor textarea').value.includes('演示输出')"
+                    "document.querySelector('.render-editor textarea').value.includes('主体位于画面中央')"
                 )
+                c.click("保存生图方案", ".render-editor button")
                 c.screenshot(output / "images.png")
-                c.click("保存提示词", ".prompt-editor button")
+                c.click("资产图制作", ".workspace-tabs button")
+                c.wait("document.querySelector('[aria-label=\"资产图方案工作区\"]')")
+                c.fill(
+                    ".render-editor textarea", "甲的角色设定图，正面站姿，纯色背景。"
+                )
+                c.click("保存生图资产到本地", ".render-editor button")
+                c.wait(
+                    "[...document.querySelectorAll('.render-editor button')].some(b=>b.textContent==='打开素材文件夹')"
+                )
+                c.screenshot(output / "asset-images.png")
                 c.click("设置", ".system-sidebar button")
                 c.wait("document.querySelector('.settings-sheet select')")
                 c.click("自定义节点接口", ".settings-tabs button")
@@ -443,7 +471,13 @@ def main():
                         ),
                     )
                     c.wait("document.querySelector('.assistant').hidden")
-                    for tab in ["原文与情节", "视觉资产库", "场景插图", "成果集"]:
+                    for tab in [
+                        "原文与情节",
+                        "视觉资产库",
+                        "资产图制作",
+                        "场景插图",
+                        "成果集",
+                    ]:
                         c.click(tab, ".workspace-tabs button")
                         assert c.evaluate(
                             "document.documentElement.scrollWidth<=innerWidth+1"

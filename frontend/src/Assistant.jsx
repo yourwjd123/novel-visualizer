@@ -10,10 +10,10 @@ import { api } from "./api";
 import { useWorkspace } from "./context";
 
 export default forwardRef(function Assistant({ ai, onChange }, ref) {
-  const { s, run, notify, setModal, navigate, setAssetEdit } = useWorkspace();
+  const { s, run, notify, setModal, navigate, setAssetEdit, openAssetRender } =
+    useWorkspace();
   const [tab, setTab] = useState("status"),
     [question, setQuestion] = useState(""),
-    [reference, setReference] = useState(""),
     [record, setRecord] = useState(null),
     [repair, setRepair] = useState(""),
     [position, setPosition] = useState(null),
@@ -38,13 +38,19 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
             : true),
   );
   const scope = "consult_" + s.segment;
-  const consultationKey = [s.account.id, s.project?.id, s.segment].join(":");
+  const consultationKey = [
+    s.account.id,
+    s.project?.id,
+    s.segment,
+    tab,
+    ai.target?.request_id,
+  ].join(":");
   useEffect(() => {
     if (ai.open) setTab(ai.panel || "status");
   }, [ai.open, ai.panel]);
   useEffect(() => {
     setQuestion(drafts[consultationKey] || "");
-    setReference("");
+    setRecord(null);
     current.current = consultationKey;
   }, [consultationKey]);
   useEffect(() => {
@@ -52,6 +58,7 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
       setDrafts((d) => ({ ...d, [consultationKey]: question }));
   }, [question]);
   useEffect(() => {
+    setRecord(null);
     if (!ai.open || !s.segment || tab !== "consult") return;
     const n = ++sequence.current;
     api("assistant_read", { node: 7, scope })
@@ -59,6 +66,9 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
         if (n === sequence.current) setRecord(value);
       })
       .catch((e) => notify(e.message));
+    return () => {
+      sequence.current++;
+    };
   }, [
     ai.open,
     tab,
@@ -149,7 +159,7 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
   async function send(mode) {
     const d =
       mode === "consult"
-        ? { node: 7, mode, message: question, reference }
+        ? { node: 7, mode, message: question }
         : {
             node: ai.target?.type === "prompt" ? 3 : 5,
             mode,
@@ -157,10 +167,11 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
             fields,
             message: question || "请补全所选字段，保留其余内容。",
           };
+    const sentScope = current.current;
     const result = await run("send", d);
-    if (result && !result.cancelled) {
+    if (result && !result.cancelled && current.current === sentScope) {
       setQuestion("");
-      setReference("");
+      setRecord(null);
     }
   }
   const summary = s.chapter_summary || {};
@@ -313,6 +324,11 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
                           );
                         return;
                       }
+                      if (job.node === 5 && job.asset) {
+                        await openAssetRender(job.asset);
+                        close();
+                        return;
+                      }
                       await navigate(
                         job.node === 0
                           ? "source"
@@ -417,14 +433,6 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
                       {m.role === "user" ? "用户" : "模型"} · {m.time}
                     </small>
                     <p>{m.content}</p>
-                    {m.role === "assistant" && (
-                      <button
-                        className="quiet small"
-                        onClick={() => setReference(m.content)}
-                      >
-                        本轮引用此回答
-                      </button>
-                    )}
                   </section>
                 ))}
                 <button
@@ -441,7 +449,7 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
                 <h3>补全字段</h3>
                 {(ai.target?.type === "prompt"
                   ? ["text"]
-                  : ["description", "notes", "attributes", "states", "missing"]
+                  : ai.fields || ["description"]
                 ).map((field) => (
                   <label className="check-row" key={field}>
                     <input
@@ -457,7 +465,15 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
                     />
                     {
                       {
-                        text: "图像提示词",
+                        text: "最终生图方案",
+                        face: "面容",
+                        body: "体型",
+                        appearance_state: "外观与状态",
+                        background: "背景信息",
+                        relationships: "关系",
+                        scene_description: "场景描述",
+                        shape: "外形描述",
+                        plot_context: "相关情节",
                         description: "描述",
                         notes: "备注",
                         attributes: "属性",
@@ -536,12 +552,6 @@ export default forwardRef(function Assistant({ ai, onChange }, ref) {
       <footer className="assistant-compose">
         {tab !== "status" && (
           <>
-            {reference && (
-              <div className="notice">
-                已明确引用一条回答
-                <button onClick={() => setReference("")}>移除引用</button>
-              </div>
-            )}
             <textarea
               aria-label="本轮对话输入"
               rows={3}
