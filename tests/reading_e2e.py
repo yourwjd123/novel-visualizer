@@ -190,6 +190,27 @@ def main():
                     assert c.evaluate(
                         "document.querySelector('[aria-label=\"展开图像栏\"]').getBoundingClientRect().right<=innerWidth"
                     ), width
+                c.call("Emulation.setDeviceMetricsOverride",dict(width=1440,height=1000,deviceScaleFactor=1,mobile=False))
+                c.evaluate("document.querySelector('[aria-label=\"返回书架\"]').click()")
+                c.wait("document.querySelector('.book-cover')")
+                bookname=c.evaluate("document.querySelector('.book-cover span').textContent")
+                c.evaluate("document.querySelector('.book-menu summary').click()")
+                c.click("删除小说")
+                c.wait("document.querySelector('[aria-label=\"删除小说\"]')")
+                assert c.evaluate("[...document.querySelectorAll('[aria-label=\"删除小说\"] button')].find(b=>b.textContent==='移入回收站').disabled")
+                c.fill('[aria-label="删除小说书名验证"]',bookname)
+                c.screenshot(out / "book-delete.png")
+                c.click("移入回收站",'[aria-label="删除小说"] button')
+                c.wait("!document.querySelector('.book-cover')")
+                c.click("设置",'.system-sidebar button')
+                c.click("小说回收站",'.settings-tabs button')
+                c.wait("document.querySelector('.trash-book')")
+                c.screenshot(out / "book-trash.png")
+                c.click("恢复",'.trash-book button')
+                c.wait("!document.querySelector('.trash-book')")
+                c.evaluate("document.querySelector('.brand').click()")
+                c.wait("document.querySelector('.book-cover img')")
+                assert len(list(Path(data).rglob('阅读记录.json')))==1
                 assert not c.errors, c.errors
                 (out / "result.json").write_text(
                     json.dumps(
@@ -203,6 +224,7 @@ def main():
                                 "pagination and bookmark persistence",
                                 "cover upload and reader resume",
                                 "multiple viewport widths",
+                                "whole book recycle and restore with title verification",
                             ],
                         ),
                         indent=2,

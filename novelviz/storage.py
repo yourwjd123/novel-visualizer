@@ -39,6 +39,7 @@ DIRS = [
     "08_项目数据",
 ]
 DEFAULTS = dict(
+    workflow_ai_assist=False,
     asset_association_mode="ai",
     language_connection_id="",
     language_max_tokens=10000,
@@ -327,6 +328,8 @@ class Store:
             image["connection_id"] = id_map.get(image.get("connection_id"), "")
             for task in image.get("tasks", {}).values():
                 task["connection_id"] = id_map.get(task.get("connection_id"), "")
+            for preset in image.get("presets", []):
+                preset["connection_id"] = id_map.get(preset.get("connection_id"), "")
             self.save_image_defaults(a, image)
 
     def connections(self, a):
@@ -456,6 +459,8 @@ class Store:
     def save_image_defaults(self, a, data, secrets=()):
         fields = {
             "connection_id",
+            "presets",
+            "preset_id",
             "workflow",
             "mapping",
             "seed",
@@ -476,7 +481,7 @@ class Store:
                 name: {
                     k: copy.deepcopy(v)
                     for k, v in task.items()
-                    if k in fields and k != "tasks"
+                    if k in fields and k not in ("tasks", "presets")
                 }
                 for name, task in data["tasks"].items()
                 if name in ("illustration", "人物", "场景", "道具")

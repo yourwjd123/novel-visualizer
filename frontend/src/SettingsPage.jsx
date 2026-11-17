@@ -1,7 +1,9 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Plus, X, Save, RotateCcw } from "lucide-react";
 import { useWorkspace, copy, freshId } from "./context";
 import { PageHeading } from "./App";
+import { BookTrash } from "./BookManagement";
+import WorkflowPresets from "./WorkflowPresets";
 import PromptManager from "./PromptManager";
 import { api } from "./api";
 
@@ -47,7 +49,41 @@ export default function SettingsPage() {
         s.image_settings.connection_id ||
         "image-default",
     });
-  }, [task, s.image_settings, section, customKind]);
+  }, [task, JSON.stringify(s.image_settings), section, customKind]);
+  const inference = useRef(0);
+  useEffect(() => {
+    inference.current++;
+  }, [section, task, image?.connection_id]);
+  useEffect(
+    () => () => {
+      inference.current++;
+    },
+    [],
+  );
+  async function importWorkflow(text) {
+    const seq = ++inference.current;
+    setImageField("workflow", text);
+    try {
+      let result = await api("workflow_inspect", { workflow: text });
+      while (!result.done && seq === inference.current) {
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        result = await api("workflow_inspect_status");
+      }
+      if (seq !== inference.current) return;
+      setImage((p) => ({
+        ...p,
+        workflow: text,
+        mapping: JSON.stringify(result.mapping, null, 2),
+      }));
+      notify(
+        result.warnings?.length
+          ? result.warnings.join("；")
+          : "映射已自动填入，可自行修改",
+      );
+    } catch (e) {
+      notify(e.message);
+    }
+  }
   const canLeave = () =>
     !dirty.current || window.confirm("有尚未保存的设置，放弃这些修改吗？");
   const connections = s.connections
@@ -134,6 +170,7 @@ export default function SettingsPage() {
           ["ai_options", "AI 选项"],
           ["appearance", "外观"],
           ["transfer", "导入与导出"],
+          ["book_trash", "小说回收站"],
         ].map(([id, label]) => (
           <button
             className={section === id ? "active" : ""}
@@ -149,8 +186,23 @@ export default function SettingsPage() {
           </button>
         ))}
       </div>
+      {section === "book_trash" && <BookTrash />}
       {section === "ai_options" && (
         <section className="settings-sheet">
+          <h2>工作流映射</h2>
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={!!s.settings.workflow_ai_assist}
+              onChange={(e) =>
+                run("settings", { workflow_ai_assist: e.target.checked })
+              }
+            />
+            使用默认语言模型辅助解析工作流映射
+          </label>
+          <p className="muted">
+            默认关闭，仅本地解析。开启后在导入或主动识别时调用默认语言模型，只发送节点结构，不附带原文、历史对话、图片或旧提示词。
+          </p>
           <h2>情节与资产关联</h2>
           <label>
             关联方式
@@ -694,50 +746,67 @@ export default function SettingsPage() {
                 />
               </label>
             </div>
-            <label>
-              ComfyUI API 工作流
-              <textarea
-                className="code"
-                rows={10}
-                value={image.workflow || ""}
-                onChange={(e) => setImageField("workflow", e.target.value)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={async (e) => {
-                  e.preventDefault();
-                  const file = e.dataTransfer.files[0];
-                  if (file?.name.endsWith(".json"))
-                    setImageField("workflow", await file.text());
-                }}
-                placeholder="粘贴或拖入 API 格式 JSON；不是编辑器格式"
-              />
-            </label>
-            <label>
-              导入工作流 JSON
-              <input
-                type="file"
-                accept=".json"
-                onChange={async (e) => {
-                  if (e.target.files[0])
-                    setImageField("workflow", await e.target.files[0].text());
-                }}
-              />
-            </label>
-            <label>
-              节点映射
-              <textarea
-                className="code"
-                rows={5}
-                value={image.mapping || ""}
-                onChange={(e) => setImageField("mapping", e.target.value)}
-                placeholder={
-                  '{"prompt":["6","text"],"seed":["3","seed"],"reference_1":["10","image"]}'
-                }
-              />
-            </label>
-            <p className="muted small">
-              reference_1、reference_2
-              等按场景关联卡顺序对应。未映射的参考图不会上传，生成前会提示。
-            </p>
+            <WorkflowPresets
+              connection={connection}
+              image={image}
+              setImageField={setImageField}
+              onEditConnection={setEditor}
+            />
+            <details className="legacy-workflow">
+              <summary>旧版工作流与手动映射（兼容保留）</summary>
+              <label>
+                ComfyUI API 工作流
+                <textarea
+                  className="code"
+                  rows={10}
+                  value={image.workflow || ""}
+                  onPaste={(e) => {
+                    const text = e.clipboardData.getData("text");
+                    try {
+                      JSON.parse(text);
+                      e.preventDefault();
+                      importWorkflow(text);
+                    } catch {}
+                  }}
+                  onChange={(e) => setImageField("workflow", e.target.value)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={async (e) => {
+                    e.preventDefault();
+                    const file = e.dataTransfer.files[0];
+                    if (file?.name.endsWith(".json"))
+                      importWorkflow(await file.text());
+                  }}
+                  placeholder="粘贴或拖入 API 格式 JSON；不是编辑器格式"
+                />
+              </label>
+              <label>
+                导入工作流 JSON
+                <input
+                  type="file"
+                  accept=".json"
+                  onChange={async (e) => {
+                    if (e.target.files[0])
+                      importWorkflow(await e.target.files[0].text());
+                  }}
+                />
+              </label>
+              <label>
+                节点映射
+                <textarea
+                  className="code"
+                  rows={5}
+                  value={image.mapping || ""}
+                  onChange={(e) => setImageField("mapping", e.target.value)}
+                  placeholder={
+                    '{"prompt":["6","text"],"seed":["3","seed"],"reference_1":["10","image"]}'
+                  }
+                />
+              </label>
+              <p className="muted small">
+                reference_1、reference_2
+                等按场景关联卡顺序对应。未映射的参考图不会上传，生成前会提示。
+              </p>
+            </details>
             {section === "custom" && (
               <label className="check-row">
                 <input
@@ -888,7 +957,7 @@ export default function SettingsPage() {
           <div className="separated">
             <h2>测试版本与许可</h2>
             <p className="muted small prose">
-              v0.9.0-beta.1 · GPL-3.0。UI 标签交互与纸墨基础参考
+              v0.10.0-beta.1 · GPL-3.0。UI 标签交互与纸墨基础参考
               Pagekin；视觉资产卡参考 Story Asset
               Studio（MIT）。对应版权和完整许可随源码提供。此应用只做已有文本可视化，不提供小说创作功能。
             </p>

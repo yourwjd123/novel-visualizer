@@ -72,6 +72,44 @@ if os.environ.get("NOVELVIZ_READER_E2E") == "1":
     ]
     project.save_asset(asset)
     project.close()
+if os.environ.get("NOVELVIZ_WORKFLOW_E2E") == "1":
+    from pathlib import Path
+    import shutil
+    import novelviz.desktop as desktop
+
+    account = store.accounts[0]
+    store.save_connection(
+        account,
+        dict(
+            id="e2e-comfy",
+            name="测试云端 ComfyUI",
+            kind="comfy",
+            endpoint="http://127.0.0.1:1",
+        ),
+    )
+    store.save_image_defaults(account, dict(connection_id="e2e-comfy"))
+
+    def fake_upload(endpoint, path, key):
+        return path.name
+
+    def fake_comfy(endpoint, flow, dest, cancel, progress, key):
+        dest.mkdir(parents=True, exist_ok=True)
+        source = next(
+            p
+            for p in Path(sys.argv[1]).rglob("*")
+            if p.suffix.lower() in (".png", ".jpg", ".jpeg")
+            and "05_生成任务" not in str(p)
+        )
+        target = dest / ("fixture-generated" + source.suffix)
+        shutil.copyfile(source, target)
+        (Path(sys.argv[1]) / "mock-comfy.json").write_text(
+            json.dumps(flow), encoding="utf-8"
+        )
+        return [str(target)]
+
+    desktop.Bridge.confirm = lambda self, title, message: True
+    desktop.upload_comfy = fake_upload
+    desktop.comfy_call = fake_comfy
 window = Desktop(sys.argv[1])
 window.resize(1440, 1000)
 window.show()

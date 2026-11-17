@@ -168,7 +168,8 @@ def main():
                 c.evaluate("document.querySelector('.image-check').click()")
                 c.click("移入回收站", ".selection-bar button")
                 c.wait("document.querySelectorAll('.image-card').length===3")
-                c.click("回收站")
+                c.evaluate("document.querySelector('.asset-more summary').click()")
+                c.click("资产回收站")
                 c.wait("document.querySelectorAll('.image-card').length===1")
                 c.click("恢复", ".image-card button")
                 c.wait("document.querySelectorAll('.image-card').length===0")
@@ -179,11 +180,11 @@ def main():
                 )
                 c.fill(".scene-selector", value)
                 c.wait(
-                    "document.querySelector('.result-grid .image-hit img')?.naturalWidth>0"
+                    "document.querySelector('.render-main-image img')?.naturalWidth>0"
                 )
                 c.screenshot(output / "images.png")
                 external_png = c.evaluate(
-                    "document.querySelector('.result-grid .image-hit img').src"
+                    "document.querySelector('.render-main-image img').src"
                 )
                 c.click("选为成果")
                 c.click("成果集", ".workspace-tabs button")
@@ -214,6 +215,7 @@ def main():
                 c.screenshot(output / "results-edit.png")
                 c.click("原文与情节", ".workspace-tabs button")
                 c.click("视觉资产库", ".workspace-tabs button")
+                c.evaluate("document.querySelector('.page-heading .toolbar-menu summary').click()")
                 c.click("粘贴原文")
                 c.wait("document.querySelector('.modal textarea')")
                 c.fill(".modal form input", "独立章节测试")
@@ -255,7 +257,8 @@ def main():
                     "document.querySelector('.settings-sheet').innerText"
                 )
                 c.click("视觉资产库", ".workspace-tabs button")
-                c.click("获取本章建卡建议", ".page-heading button")
+                c.evaluate("document.querySelector('.source-toolbar .toolbar-menu summary').click()")
+                c.click("获取本章建卡建议")
                 c.wait("document.querySelector('.advice-row')", 20)
                 c.evaluate(
                     "document.querySelector('[aria-label=\"收起 AI 助手\"]').click()"
@@ -272,9 +275,10 @@ def main():
                     "document.querySelector('[aria-label=\"收起 AI 助手\"]').click()"
                 )
                 c.screenshot(output / "chapter-candidates.png")
+                c.evaluate("document.querySelector('.source-toolbar .toolbar-menu').open=true")
                 c.click("完成本章资产整理")
                 c.wait(
-                    "document.querySelector('.asset-workflow').innerText.includes('已完成')"
+                    "document.querySelector('.asset-stage-status').innerText.includes('已完成')"
                 )
                 c.evaluate("document.querySelector('.asset-grid .image-check').click()")
                 c.fill('[aria-label="批量资产状态"]', "已锁定")
@@ -401,7 +405,8 @@ def main():
                 c.wait(
                     "!([...document.querySelectorAll('.asset-grid .image-card')].some(e=>e.innerText.includes('甲')))"
                 )
-                c.click("回收站")
+                c.evaluate("document.querySelector('.asset-more').open=true")
+                c.click("资产回收站")
                 c.click("恢复资产")
                 c.click("资产档案")
                 c.wait(
@@ -449,16 +454,16 @@ def main():
                     + "),c=>c.charCodeAt(0));const files=new DataTransfer();files.items.add(new File([bytes],'外部生成.png',{type:'image/png'}));document.querySelector('.drop-zone').dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:files}));})()"
                 )
                 c.wait(
-                    "document.querySelector('.result-grid').innerText.includes('用户导入')"
+                    "document.querySelector('.render-candidate-strip button')"
                 )
-                c.click("移除候选", ".result-grid button")
-                c.wait("!document.querySelector('.result-grid .image-card')")
+                c.click("移除候选", ".render-output-pane button")
+                c.wait("!document.querySelector('.render-candidate-strip button')")
                 c.evaluate(
                     "[...document.querySelectorAll('details summary')].find(e=>e.textContent.startsWith('已移除候选')).click()"
                 )
                 c.click("恢复候选")
-                c.wait("document.querySelector('.result-grid .image-card')")
-                c.click("选为成果", ".result-grid button")
+                c.wait("document.querySelector('.render-candidate-strip button')")
+                c.click("选为成果", ".render-output-pane button")
                 c.screenshot(output / "external-candidates.png")
                 c.click("资产图制作", ".workspace-tabs button")
                 c.wait(

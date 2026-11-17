@@ -18,156 +18,166 @@ import { api } from "./api";
 
 import { RenderEditor } from "./RenderWorkspace";
 export default function ImagesPage() {
-  const { s, run, navigate, setAssetEdit, setLarge, dirty, uploadFiles } =
-    useWorkspace();
+  const { s, run, setAssetEdit, dirty, navigate } = useWorkspace();
   const scene = s.scenes.find((v) => v.id === s.scene);
-  if (!scene)
-    return (
-      <>
-        <PageHeading title="场景插图" />
+  const change = async (data) => {
+    if (!dirty.current || window.confirm("放弃未保存方案并切换情节？")) {
+      dirty.current = false;
+      await run("select", data);
+    }
+  };
+  return (
+    <div className="scene-workspace">
+      <div className="compact-page-heading">
+        <h1>场景插图</h1>
+        <label>
+          章节
+          <select
+            aria-label="制图章节"
+            value={s.segment || ""}
+            disabled={s.busy}
+            onChange={(e) => change({ segment: e.target.value })}
+          >
+            {s.segments.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          情节
+          <select
+            className="scene-selector"
+            aria-label="制图情节"
+            value={s.scene || ""}
+            disabled={s.busy}
+            onChange={(e) => change({ scene: e.target.value })}
+          >
+            {s.scenes.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.title}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      {!scene ? (
         <Empty
           title="请先确认情节"
-          text="从原文与情节选择一个情节。"
+          text="从原文与情节选择一个已确认的情节。"
           action={<button onClick={() => navigate("source")}>前往情节</button>}
         />
-      </>
-    );
-  const pictures = s.jobs
-    .filter((j) => j.scene === s.scene && !j.asset)
-    .flatMap((j) => (j.pictures || []).map((p) => ({ ...p, job: j })));
+      ) : (
+        <>
+          <details className="scene-source-summary">
+            <summary>情节摘要与原文依据</summary>
+            <p>{scene.summary}</p>
+            <pre>
+              {scene.source_text ||
+                scene.source_snapshot ||
+                "请在原文与情节中定位原文查看。"}
+            </pre>
+          </details>
+          <RenderEditor
+            key={s.scene}
+            referencesRenderer={(state) => (
+              <SceneReferences state={state} setAssetEdit={setAssetEdit} />
+            )}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+function SceneReferences({ state, setAssetEdit }) {
+  const { s, run } = useWorkspace();
   return (
-    <>
-      <PageHeading title="场景插图" subtitle={scene.title} />
-      <label>
-        当前情节
-        <select
-          className="scene-selector"
-          value={s.scene}
-          onChange={(e) => {
-            if (
-              !dirty.current ||
-              window.confirm("放弃未保存方案并切换情节？")
-            ) {
-              dirty.current = false;
-              run("select", { scene: e.target.value });
-            }
-          }}
-        >
-          {s.scenes.map((v) => (
-            <option key={v.id} value={v.id}>
-              {v.title}
-            </option>
-          ))}
-        </select>
-      </label>
-      <RenderEditor key={s.scene} />
-      <h2>情节关联与实际出镜</h2>
-      <div className="shot-ref-grid">
-        {s.requirements.map((r, i) => (
-          <section className="reference-card" key={r.slot || i}>
-            <button
-              className="quiet"
-              onClick={() => {
-                const asset = s.assets.find((a) => a.id === r.asset_id);
-                if (asset) setAssetEdit(asset);
-              }}
+    <section className="scene-references">
+      <div className="section-heading">
+        <h3>关联资产与参考图</h3>
+        <span className="muted small">
+          {state.references.length} 张实际参考图
+        </span>
+      </div>
+      <div className="scene-reference-strip">
+        {s.requirements.map((r, i) => {
+          const main = s.assets.find((a) => a.id === r.asset_id),
+            ref = state.references.find(
+              (f) => f.asset_id === r.asset_id || f.name === r.name,
+            ),
+            included = !(s.cast_omissions || []).includes(r.asset_id);
+          return (
+            <section
+              key={r.slot || i}
+              className={"reference-card " + (!included ? "omitted" : "")}
             >
-              {r.asset?.thumbnail && <img src={r.asset.thumbnail} alt="" />}
-              {r.name}
-            </button>
-            <small>
-              {r.problem || "档案可用"} ·{" "}
-              {r.asset?.selected_variant?.title || "主卡"}
-            </small>
-            {r.asset_id && (
-              <>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={!(s.cast_omissions || []).includes(r.asset_id)}
+              <button
+                className="reference-open quiet"
+                onClick={() => main && setAssetEdit(main)}
+              >
+                {(ref?.thumbnail || r.asset?.thumbnail) && (
+                  <img src={ref?.thumbnail || r.asset.thumbnail} alt="" />
+                )}
+                <span>
+                  {r.name}
+                  <small>
+                    {r.problem ||
+                      (!included
+                        ? "不参与本图"
+                        : ref
+                          ? "参考图" + ref.number
+                          : "文字参与")}{" "}
+                    · {r.asset?.selected_variant?.title || "主卡"}
+                  </small>
+                </span>
+              </button>
+              {r.asset_id && (
+                <>
+                  <label className="check-row">
+                    <input
+                      type="checkbox"
+                      checked={included}
+                      disabled={s.busy}
+                      onChange={(e) =>
+                        run("scene_cast", {
+                          asset: r.asset_id,
+                          included: e.target.checked,
+                        })
+                      }
+                    />
+                    本图出镜
+                  </label>
+                  <select
+                    aria-label={r.name + "的状态"}
+                    disabled={s.busy}
+                    value={s.scene_variant_choices?.[r.asset_id] || "auto"}
                     onChange={(e) =>
-                      run("scene_cast", {
-                        asset: r.asset_id,
-                        included: e.target.checked,
+                      run("select_variant", {
+                        id: r.asset_id,
+                        variant: e.target.value,
+                        scene: s.scene,
                       })
                     }
-                  />
-                  本图出镜
-                </label>
-                <select
-                  value={s.scene_variant_choices?.[r.asset_id] || "auto"}
-                  onChange={(e) =>
-                    run("select_variant", {
-                      id: r.asset_id,
-                      variant: e.target.value,
-                      scene: s.scene,
-                    })
-                  }
-                >
-                  <option value="auto">继承本章</option>
-                  <option value="base">主卡</option>
-                  {(
-                    s.assets.find((a) => a.id === r.asset_id)?.variants || []
-                  ).map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.title}
-                    </option>
-                  ))}
-                </select>
-              </>
-            )}
-          </section>
-        ))}
-      </div>
-      <h2>插图候选</h2>
-      <DropZone
-        compact
-        accept=".png,.jpg,.jpeg,.webp"
-        label="上传或拖入外部生成的场景插图，先存为当前情节候选"
-        onFiles={(files) => uploadFiles(files, "scene_image")}
-      />
-      <div className="result-grid">
-        {pictures
-          .filter((p) => !p.hidden)
-          .map((p) => (
-            <ImageCard
-              key={p.path}
-              image={p.thumbnail}
-              title={scene.title}
-              onOpen={() => setLarge({ path: p.path, title: scene.title })}
-            >
-              {p.job.source === "用户导入" && (
-                <span className="badge">用户导入</span>
+                  >
+                    <option value="auto">继承本章</option>
+                    <option value="base">主卡</option>
+                    {(main?.variants || []).map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {v.title}
+                      </option>
+                    ))}
+                  </select>
+                </>
               )}
-              <button onClick={() => run("choose_result", { path: p.path })}>
-                选为成果
-              </button>
-              <button onClick={() => run("scene_candidate", { path: p.path })}>
-                移除候选
-              </button>
-            </ImageCard>
-          ))}
+            </section>
+          );
+        })}
       </div>
-      {pictures.some((p) => p.hidden) && (
-        <details>
-          <summary>已移除候选（原文件与已确认成果保留）</summary>
-          {pictures
-            .filter((p) => p.hidden)
-            .map((p) => (
-              <p key={p.path}>
-                {p.job.original_name || "插图候选"}
-                <button
-                  onClick={() =>
-                    run("scene_candidate", { path: p.path, restore: true })
-                  }
-                >
-                  恢复候选
-                </button>
-              </p>
-            ))}
-        </details>
+      {!s.requirements.length && (
+        <p className="muted">尚无关联资产，可在情节卡中建立关联。</p>
       )}
-    </>
+    </section>
   );
 }
 

@@ -475,7 +475,7 @@ export default function App() {
             </button>
             <div className="sidebar-spacer" />
             <p className="side-label sidebar-note">
-              v0.9.0-beta.1 · 测试版
+              v0.10.0-beta.1 · 测试版
               <br />
               既有文本 → 视觉资产 → 插图
             </p>

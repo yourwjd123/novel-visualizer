@@ -1096,10 +1096,17 @@ def test_comfy_reference_numbers_match_actual_upload_and_offline_export(
         dict(
             connection_id="local-comfy",
             workflow=json.dumps(
-                {"6": {"class_type": "TestNode", "inputs": {"text": "", "image": ""}}}
+                {
+                    "6": {"class_type": "CLIPTextEncode", "inputs": {"text": ""}},
+                    "7": {"class_type": "LoadImage", "inputs": {"image": ""}},
+                    "8": {
+                        "class_type": "TestOutput",
+                        "inputs": {"text": ["6", 0], "image": ["7", 0]},
+                    },
+                }
             ),
             mapping=json.dumps(
-                {"prompt": ["6", "text"], "reference_1": ["6", "image"]}
+                {"prompt": ["6", "text"], "reference_1": ["7", "image"]}
             ),
         ),
     )
@@ -1124,7 +1131,7 @@ def test_comfy_reference_numbers_match_actual_upload_and_offline_export(
     job, fn = captured[0]
     fn(threading.Event(), lambda x: None)
     assert len(uploaded) == 1 and uploaded[0].is_file()
-    assert flows[0]["6"]["inputs"]["image"] == "uploaded.png"
+    assert flows[0]["7"]["inputs"]["image"] == "uploaded.png"
     assert "乙（参考图1）" in job["prompt"] and "参考图2" not in job["prompt"]
     exported = work.export_render_bundle("甲与乙（参考图1）在渡口相遇。", "相遇")
     assert (Path(exported["path"]) / "生图方案.md").read_text() == job["prompt"]
@@ -1537,3 +1544,269 @@ def test_results_edit_replace_delete_restore_preserves_jobs_and_original(
         work.result_edit(dict(id=result["id"], scene="other-project-scene"))
     with pytest.raises(ValueError):
         work.results_delete(["missing"])
+
+
+def test_whole_book_recycle_restore_and_permanent_scope(work, tmp_path):
+    identity = work.project.meta["id"]
+    name = work.project.meta["name"]
+    root = work.project.path
+    marker = root / "06_最终成果" / "保留.txt"
+    marker.write_text("original")
+    outside = work.store.account_dir(work.account) / "不要删除.txt"
+    outside.write_text("keep")
+    work.busy = True
+    with pytest.raises(ValueError, match="任务仍在运行"):
+        work.book_delete(identity, name)
+    work.busy = False
+    with pytest.raises(ValueError, match="书名"):
+        work.book_delete(identity, "wrong")
+    work.book_delete(identity, name)
+    assert not root.exists() and work.project is None and not work.bookshelf()
+    trash = work.book_trash()
+    assert len(trash) == 1
+    work.book_trash_action(trash[0]["trash_id"], name, restore=True)
+    assert marker.read_text() == "original" and work.bookshelf()[0]["id"] == identity
+    work.open_project(str(root))
+    work.book_delete(identity, name, permanent=True)
+    assert not root.exists() and outside.read_text() == "keep" and not work.book_trash()
+
+
+def test_book_trash_is_account_isolated_and_purge_needs_name(work):
+    identity = work.project.meta["id"]
+    name = work.project.meta["name"]
+    account = work.account
+    work.book_delete(identity, name)
+    record = work.book_trash()[0]
+    other = work.store.create_account("other")
+    work.login(other["id"])
+    assert work.book_trash() == []
+    with pytest.raises(ValueError):
+        work.book_trash_action(record["trash_id"], name)
+    work.login(account["id"])
+    with pytest.raises(ValueError):
+        work.book_trash_action(record["trash_id"], "wrong")
+    work.book_trash_action(record["trash_id"], name)
+    assert not work.book_trash()
+
+
+def test_presets_select_exact_count_without_switching_connections(work):
+    from test_workflows import graph
+
+    work.save_connection(
+        dict(id="comfy-a", name="云端", kind="comfy", endpoint="http://localhost:8188")
+    )
+    work.save_connection(
+        dict(id="comfy-b", name="本地", kind="comfy", endpoint="http://localhost:8189")
+    )
+    from novelviz.workflows import inspect_flow
+
+    for cid, count in [("comfy-a", 1), ("comfy-a", 2), ("comfy-b", 3)]:
+        f = graph(count)
+        work.save_workflow_preset(
+            dict(
+                id=cid + str(count),
+                name=f"{count}图",
+                connection_id=cid,
+                workflow=f,
+                mapping=inspect_flow(f)["mapping"],
+                reference_count=count,
+                default=True,
+            )
+        )
+    config = work.store.image_defaults(work.account)
+    config["connection_id"] = "comfy-a"
+    work.store.save_image_defaults(work.account, config)
+    chosen, c = work.resolve_generation("illustration", 2)
+    assert chosen["preset_id"] == "comfy-a2" and c["id"] == "comfy-a"
+    with pytest.raises(ValueError):
+        work.resolve_generation("illustration", 3)
+    chosen, c = work.resolve_generation(
+        "illustration", 3, dict(connection_id="comfy-b", preset_id="comfy-b3")
+    )
+    assert c["id"] == "comfy-b"
+    assert work.store.image_defaults(work.account)["connection_id"] == "comfy-a"
+    with pytest.raises(ValueError):
+        work.resolve_generation(
+            "illustration", 1, dict(connection_id="comfy-a", preset_id="comfy-a2")
+        )
+
+
+def test_ai_workflow_mapping_uses_default_only_and_no_user_material(work, monkeypatch):
+    from test_workflows import graph
+    from novelviz.workflows import inspect_flow
+
+    b = Bridge(work.store.root)
+    b.workspace = work
+    f = graph()
+    f["2"]["inputs"]["ui_cache"] = {"urls": ["nested-old-filename.png"]}
+    monkeypatch.setattr(
+        "novelviz.desktop.text_call",
+        lambda *a, **k: pytest.fail("default local must not call AI"),
+    )
+    r = b.dispatch("workflow_inspect", dict(workflow=f))
+    assert r["done"] and r["mapping"] == inspect_flow(f)["mapping"]
+    work.save_connection(
+        dict(
+            id="map-model",
+            name="映射模型",
+            kind="openai",
+            endpoint="http://localhost:9999/v1",
+            model="mapper",
+        )
+    )
+    settings = work.store.settings(work.account)
+    work.store.save_settings(
+        work.account,
+        dict(
+            settings,
+            workflow_ai_assist=True,
+            language_connection_id="map-model",
+            language_preface="用户前置规则",
+        ),
+    )
+    seen = []
+
+    def call(params, messages, context, *args, **kwargs):
+        seen.append((params, messages, context))
+        return json.dumps(dict(mapping=inspect_flow(f)["mapping"], warnings=[]))
+
+    monkeypatch.setattr("novelviz.desktop.text_call", call)
+    b.dispatch("workflow_inspect", dict(workflow=f))
+    wait(b)
+    result = b.dispatch("workflow_inspect_status", {})
+    assert result["done"] and result["mapping"] == inspect_flow(f)["mapping"]
+    assert seen[0][0]["model"] == "mapper" and seen[0][0]["system"].startswith(
+        "用户前置规则"
+    )
+    request = json.dumps(seen[0][1], ensure_ascii=False)
+    assert (
+        "old prompt" not in request
+        and "old-1.png" not in request
+        and "甲走进渡口" not in request
+    )
+    assert "nested-old-filename" not in request
+    assert seen[0][2] == "" and len(seen[0][1]) == 1
+
+
+def test_generation_options_counts_only_actual_files_and_never_switches_service(
+    work, tmp_path
+):
+    from test_workflows import graph
+    from novelviz.workflows import inspect_flow
+
+    a = work.save_asset(dict(name="甲", kind="人物", review="已确认"))
+    b = work.save_asset(dict(name="乙", kind="人物", review="已确认"))
+    work.add_reference(b["id"], picture(tmp_path / "ref.png"))
+    work.confirm_split(rows())
+    work.project.set_requirements(
+        work.scene,
+        [dict(name=x["name"], kind="人物", asset_id=x["id"]) for x in (a, b)],
+    )
+    for cid, count in [("default-cloud", 2), ("other-local", 1)]:
+        work.save_connection(
+            dict(id=cid, name=cid, kind="comfy", endpoint="http://localhost:8188")
+        )
+        f = graph(count)
+        work.save_workflow_preset(
+            dict(
+                id=cid,
+                name=cid,
+                connection_id=cid,
+                reference_count=count,
+                workflow=f,
+                mapping=inspect_flow(f)["mapping"],
+            )
+        )
+    config = work.store.image_defaults(work.account)
+    work.store.save_image_defaults(
+        work.account, dict(config, connection_id="default-cloud")
+    )
+    options = work.generation_options(plan="甲与乙相遇。")
+    assert options["reference_count"] == 1 and options["selected"] == ""
+    assert any(
+        r["connection_id"] == "other-local" and r["available"]
+        for r in options["options"]
+    )
+    assert not any(
+        r["connection_id"] == "default-cloud" and r["available"]
+        for r in options["options"]
+    )
+    assert not work.project.jobs()
+
+
+def test_workflow_presets_export_import_remaps_connections_without_keys(work, tmp_path):
+    from test_workflows import graph
+    from novelviz.workflows import inspect_flow
+
+    work.save_connection(
+        dict(id="cloud", name="cloud", kind="comfy", endpoint="http://localhost:8799")
+    )
+    f = graph(1)
+    work.save_workflow_preset(
+        dict(
+            id="one",
+            name="单图",
+            connection_id="cloud",
+            reference_count=1,
+            workflow=f,
+            mapping=inspect_flow(f)["mapping"],
+        )
+    )
+    dest = tmp_path / "settings.json"
+    work.store.export_settings(work.account, dest)
+    other = work.store.create_account("imported")
+    work.store.import_settings(other, dest)
+    imported = work.store.image_defaults(other)["presets"][0]
+    assert imported["connection_id"] != "cloud"
+    assert any(
+        c["id"] == imported["connection_id"] for c in work.store.connections(other)
+    )
+    assert imported["mapping"] == json.dumps(
+        inspect_flow(f)["mapping"], ensure_ascii=False
+    )
+    assert all(
+        c["endpoint"] == "http://localhost:8188"
+        for c in work.store.connections(other)
+        if c["id"] == imported["connection_id"]
+    )
+
+
+def test_per_node_preset_precedes_group_default(work):
+    from test_workflows import graph
+    from novelviz.workflows import inspect_flow
+
+    work.confirm_split(rows())
+    work.save_connection(
+        dict(id="choose", name="choose", kind="comfy", endpoint="http://localhost:8188")
+    )
+    f = graph(0)
+    for identity in ("group-default", "node-choice"):
+        work.save_workflow_preset(
+            dict(
+                id=identity,
+                name=identity,
+                connection_id="choose",
+                reference_count=0,
+                workflow=f,
+                mapping=inspect_flow(f)["mapping"],
+                default=identity == "group-default",
+            )
+        )
+    config = work.store.image_defaults(work.account)
+    work.store.save_image_defaults(
+        work.account,
+        dict(
+            config,
+            connection_id="choose",
+            tasks=dict(
+                illustration=dict(
+                    connection_override=True,
+                    connection_id="choose",
+                    preset_id="node-choice",
+                )
+            ),
+        ),
+    )
+    assert (
+        work.generation_options(plan="雨夜渡口。")["selected"] == "choose:node-choice"
+    )

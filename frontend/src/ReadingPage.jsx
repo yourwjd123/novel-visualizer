@@ -6,6 +6,7 @@ import React, {
   useCallback,
 } from "react";
 import {
+  MoreHorizontal,
   Library,
   BookOpen,
   List,
@@ -30,8 +31,11 @@ import { api } from "./api";
 import { useWorkspace } from "./context";
 import { Empty, PageHeading } from "./App";
 
+import { DeleteBook } from "./BookManagement";
+
 export function Bookshelf() {
   const { s, run, notify, setModal, navigate } = useWorkspace();
+  const [deleting, setDeleting] = useState(null);
   const [books, setBooks] = useState([]),
     [loading, setLoading] = useState(false);
   useEffect(() => {
@@ -60,6 +64,17 @@ export function Bookshelf() {
   }
   return (
     <div className="bookshelf">
+      {deleting && (
+        <DeleteBook
+          book={deleting}
+          onClose={() => setDeleting(null)}
+          onDone={() =>
+            api("bookshelf")
+              .then(setBooks)
+              .catch((e) => notify(e.message))
+          }
+        />
+      )}
       <PageHeading
         title="书架"
         actions={
@@ -91,15 +106,29 @@ export function Bookshelf() {
       ) : books.length ? (
         <div className="bookshelf-grid">
           {books.map((book, index) => (
-            <button
-              className={"book-cover cover-" + (index % 6)}
-              key={book.id}
-              aria-label={"阅读 " + book.name}
-              onClick={() => open(book)}
-            >
-              {book.cover && <img src={book.cover} alt="" />}
-              <span>{book.name}</span>
-            </button>
+            <div className="book-tile" key={book.id}>
+              <button
+                className={"book-cover cover-" + (index % 6)}
+                key={book.id}
+                aria-label={"阅读 " + book.name}
+                onClick={() => open(book)}
+              >
+                {book.cover && <img src={book.cover} alt="" />}
+                <span>{book.name}</span>
+              </button>
+              <details className="book-menu">
+                <summary aria-label={"管理小说 " + book.name}>
+                  <MoreHorizontal size={18} />
+                </summary>
+                <button
+                  className="danger"
+                  disabled={s.busy}
+                  onClick={() => setDeleting(book)}
+                >
+                  删除小说
+                </button>
+              </details>
+            </div>
           ))}
         </div>
       ) : (

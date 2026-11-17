@@ -13,6 +13,8 @@ import json
 import shutil
 from pathlib import Path
 
+from .books import BooksMixin
+from .generation import GenerationMixin
 from .reading import ReadingMixin
 from .results import ResultsMixin
 from .importing import ImportMixin
@@ -31,7 +33,7 @@ from .prompts import (
 from .storage import DEFAULTS, NODES, Project, Store, now, redact, safe_name, uid
 
 
-class Workspace(ReadingMixin, ResultsMixin, ImportMixin, RenderMixin, TaskMixin):
+class Workspace(BooksMixin, GenerationMixin, ReadingMixin, ResultsMixin, ImportMixin, RenderMixin, TaskMixin):
     def __init__(self, root):
         self.store = Store(root, create_default=False)
         self.account = None

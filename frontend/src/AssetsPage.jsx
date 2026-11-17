@@ -114,36 +114,34 @@ export default function AssetsPage() {
     (r) => (filter === "全部" || r.kind === filter) && r.name.includes(search),
   );
   return (
-    <>
+    <div className="assets-workspace">
       <PageHeading
         title="视觉资产库"
-        subtitle="人物、场景与道具，在本小说的各个片段中复用。"
+
         actions={
           <>
-            <button
-              disabled={s.busy}
-              onClick={() => setModal({ type: "import", method: "file" })}
+            <details
+              className="toolbar-menu"
+              onClick={(e) => {
+                if (e.target.closest("button")) e.currentTarget.open = false;
+              }}
             >
-              导入章节附件
-            </button>
-            <button
-              disabled={s.busy}
-              onClick={() => setModal({ type: "import", method: "paste" })}
-            >
-              粘贴原文
-            </button>
-            <button
-              disabled={!s.segment || s.busy}
-              onClick={() =>
-                run("send", {
-                  node: 1,
-                  asset_phase: "advice",
-                  message: "阅读本章，提出简短建卡建议和三级分级。",
-                })
-              }
-            >
-              获取本章建卡建议
-            </button>
+              <summary>导入原文 ▾</summary>
+              <div>
+                <button
+                  disabled={s.busy}
+                  onClick={() => setModal({ type: "import", method: "file" })}
+                >
+                  导入章节附件
+                </button>
+                <button
+                  disabled={s.busy}
+                  onClick={() => setModal({ type: "import", method: "paste" })}
+                >
+                  粘贴原文
+                </button>
+              </div>
+            </details>
             <button
               className="primary"
               onClick={() =>
@@ -169,23 +167,6 @@ export default function AssetsPage() {
           onFiles={(files) => uploadFiles(files, "text")}
         />
       )}
-      {(s.archived_chapters || []).length > 0 && (
-        <details>
-          <summary>已删除章节</summary>
-          {s.archived_chapters.map((ch) => (
-            <p key={ch.id}>
-              {ch.name}
-              <button
-                onClick={() =>
-                  run("chapter_action", { id: ch.id, restore: true })
-                }
-              >
-                恢复章节
-              </button>
-            </p>
-          ))}
-        </details>
-      )}
       <div className="source-toolbar">
         <label>
           当前章节
@@ -201,43 +182,62 @@ export default function AssetsPage() {
             ))}
           </select>
         </label>
-        <span className="small muted">
-          整章阅读 → 勾选建议 → 正式建卡 → 确认整理完成
+        <span
+          className={"asset-stage-status " + (s.asset_ready ? "ready" : "")}
+        >
+          {s.asset_ready ? "● 本章整理已完成，可解析情节" : "○ 本章资产待整理"}
         </span>
-        <label>
-          排序
-          <select value={sort} onChange={(e) => setSort(e.target.value)}>
-            <option>等级</option>
-            <option>出现顺序</option>
-          </select>
-        </label>
+        <details
+          className="toolbar-menu"
+          onClick={(e) => {
+            if (e.target.closest("button")) e.currentTarget.open = false;
+          }}
+        >
+          <summary>建卡建议 ▾</summary>
+          <div>
+            <button onClick={() => setAdviceOpen(true)}>
+              查看／编辑建卡建议
+            </button>
+            <button
+              disabled={!s.segment || s.busy}
+              onClick={() => {
+                if (
+                  !s.asset_advice ||
+                  window.confirm("重新获取本章建议将调用模型，继续吗？")
+                )
+                  run("send", {
+                    node: 1,
+                    asset_phase: "advice",
+                    message: "阅读本章，提出简短建卡建议和三级分级。",
+                  });
+              }}
+            >
+              获取本章建卡建议
+            </button>
+            <button
+              disabled={s.busy}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    "确认本章资产整理完成，并将本章待确认资产批量确认为已确认？未选条目不建卡。",
+                  )
+                )
+                  run("asset_finish", {
+                    selected: [...adviceSelection],
+                    confirm_pending: true,
+                  });
+              }}
+            >
+              完成本章资产整理
+            </button>
+            <p className="small muted">
+              整章阅读 → 勾选建议 → 正式建卡 →
+              确认完成；无图或未知外观不阻止完成。
+            </p>
+          </div>
+        </details>
       </div>
       <section className="asset-workflow">
-        <h2>
-          本章资产整理 · {s.asset_ready ? "已完成，可解析情节" : "待完成"}
-        </h2>
-        <p>只建议主要人物、重要道具、重要场景。无图片或未知外观不阻止完成。</p>
-        <div className="actions">
-          <button onClick={() => setAdviceOpen(true)}>
-            查看／编辑建卡建议
-          </button>{" "}
-          <button
-            disabled={s.busy}
-            onClick={() => {
-              if (
-                window.confirm(
-                  "确认本章资产整理完成，并将本章待确认资产批量确认为已确认？未选条目不建卡。",
-                )
-              )
-                run("asset_finish", {
-                  selected: [...adviceSelection],
-                  confirm_pending: true,
-                });
-            }}
-          >
-            完成本章资产整理
-          </button>
-        </div>
         {adviceOpen && (
           <div className="modal-shade">
             <section className="modal" role="dialog" aria-label="建卡建议选择">
@@ -416,7 +416,6 @@ export default function AssetsPage() {
         {[
           ["records", "资产档案"],
           ["gallery", "参考图画廊"],
-          ["trash", "回收站"],
         ].map(([id, label]) => (
           <button
             className={view === id ? "active" : ""}
@@ -430,6 +429,68 @@ export default function AssetsPage() {
           </button>
         ))}
       </div>
+      <details className="asset-more toolbar-menu">
+        <summary aria-label="资产库更多选项">⋯</summary>
+        <div>
+          <button
+            onClick={() => {
+              setView("trash");
+              setSelected(new Set());
+            }}
+          >
+            资产回收站
+          </button>
+          {(s.archived_chapters || []).length > 0 && (
+            <details>
+              <summary>已删除章节</summary>
+              {s.archived_chapters.map((ch) => (
+                <p key={ch.id}>
+                  {ch.name}
+                  <button
+                    onClick={() =>
+                      run("chapter_action", { id: ch.id, restore: true })
+                    }
+                  >
+                    恢复章节
+                  </button>
+                </p>
+              ))}
+            </details>
+          )}
+          {(s.asset_candidates || []).some((a) => a.accepted) && (
+            <details>
+              <summary>本章已处理候选（保留原始建议）</summary>
+              {s.asset_candidates
+                .filter((a) => a.accepted)
+                .map((a) => (
+                  <section key={a.id}>
+                    <h3>{a.name}</h3>
+                    <pre>
+                      {JSON.stringify(
+                        {
+                          description: a.description,
+                          attributes: a.attributes,
+                          states: a.states,
+                        },
+                        null,
+                        2,
+                      )}
+                    </pre>
+                    <button
+                      onClick={() => {
+                        const asset = s.assets.find((v) => v.id === a.accepted);
+                        if (asset) setAssetEdit(asset);
+                        else notify("档案已归档，可在回收站恢复");
+                      }}
+                    >
+                      编辑对应档案
+                    </button>
+                  </section>
+                ))}
+            </details>
+          )}
+        </div>
+      </details>
       <div className="gallery-toolbar">
         {["全部", "人物", "场景", "道具"].map((kind) => (
           <button
@@ -441,6 +502,13 @@ export default function AssetsPage() {
             {kind === "全部" ? " · " + s.assets.length : ""}
           </button>
         ))}
+        <label>
+          排序
+          <select value={sort} onChange={(e) => setSort(e.target.value)}>
+            <option>等级</option>
+            <option>出现顺序</option>
+          </select>
+        </label>
         <div className="search-input">
           <Search size={14} />
           <input
@@ -575,61 +643,37 @@ export default function AssetsPage() {
               </div>
             </section>
           )}
-          {(s.asset_candidates || []).some((a) => a.accepted) && (
-            <details>
-              <summary>本章已处理候选（保留原始建议）</summary>
-              {s.asset_candidates
-                .filter((a) => a.accepted)
-                .map((a) => (
-                  <section key={a.id}>
-                    <h3>{a.name}</h3>
-                    <pre>
-                      {JSON.stringify(
-                        {
-                          description: a.description,
-                          attributes: a.attributes,
-                          states: a.states,
-                        },
-                        null,
-                        2,
-                      )}
-                    </pre>
-                    <button
-                      onClick={() => {
-                        const asset = s.assets.find((v) => v.id === a.accepted);
-                        if (asset) setAssetEdit(asset);
-                        else notify("档案已归档，可在回收站恢复");
-                      }}
-                    >
-                      编辑对应档案
-                    </button>
-                  </section>
-                ))}
-            </details>
-          )}
-          <h2 className="section-heading">资产档案</h2>
-          <div className="actions">
+          <div
+            className={
+              "actions asset-batch " + (!selected.size ? "inactive" : "")
+            }
+          >
+            {!!selected.size && <span>已选 {selected.size} 项</span>}
             <button onClick={() => setSelected(new Set(rows.map((a) => a.id)))}>
               全选当前资产
             </button>
-            <button onClick={() => setSelected(new Set())}>取消选择</button>
-            <select
-              aria-label="批量资产状态"
-              value=""
-              disabled={!selected.size || s.busy}
-              onChange={(e) =>
-                e.target.value &&
-                run("asset_review", {
-                  ids: [...selected],
-                  status: e.target.value,
-                })
-              }
-            >
-              <option value="">批量设置状态…</option>
-              <option value="待确认">待确认（取消确认／解锁）</option>
-              <option value="已确认">已确认</option>
-              <option value="已锁定">已锁定</option>
-            </select>
+            {!!selected.size && (
+              <button onClick={() => setSelected(new Set())}>取消选择</button>
+            )}
+            {!!selected.size && (
+              <select
+                aria-label="批量资产状态"
+                value=""
+                disabled={!selected.size || s.busy}
+                onChange={(e) =>
+                  e.target.value &&
+                  run("asset_review", {
+                    ids: [...selected],
+                    status: e.target.value,
+                  })
+                }
+              >
+                <option value="">批量设置状态…</option>
+                <option value="待确认">待确认（取消确认／解锁）</option>
+                <option value="已确认">已确认</option>
+                <option value="已锁定">已锁定</option>
+              </select>
+            )}
           </div>
           <div className="asset-grid">
             {rows.map((a) => (
@@ -882,7 +926,7 @@ export default function AssetsPage() {
             ))}
         </section>
       )}
-    </>
+    </div>
   );
 }
 
