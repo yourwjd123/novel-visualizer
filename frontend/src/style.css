@@ -2864,3 +2864,183 @@ pre {
   font-size: 0.85em;
   margin: 8px 0;
 }
+/* v0.11: portrait books, grouped outcomes and shared full-screen albums. */
+.bookshelf-grid {
+  grid-template-columns: repeat(auto-fill, minmax(170px, 220px));
+  gap: 26px;
+}
+.book-tile {
+  aspect-ratio: 2/3;
+}
+.book-tile .book-cover {
+  aspect-ratio: 2/3;
+  height: 100%;
+}
+.book-cover img {
+  object-fit: contain;
+  background: var(--paper);
+}
+.book-menu[open] .book-menu-actions {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 6px;
+  box-shadow: 0 6px 20px #0002;
+  border-radius: 7px;
+  min-width: 150px;
+}
+.book-menu[open] .book-menu-actions button {
+  position: static;
+  display: block;
+  width: 100%;
+  margin: 3px 0;
+  box-shadow: none;
+  text-align: left;
+}
+.chapter-tab {
+  position: relative;
+}
+.chapter-menu {
+  flex: 0 0 auto;
+}
+.chapter-menu summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 5px;
+  display: flex;
+  border-radius: 4px;
+}
+.chapter-menu summary::-webkit-details-marker {
+  display: none;
+}
+.chapter-menu > div {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 30;
+  min-width: 110px;
+  background: var(--panel);
+  padding: 5px;
+  border: 1px solid var(--line);
+  box-shadow: 0 6px 18px #0002;
+  border-radius: 6px;
+}
+.chapter-menu > div > button {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  text-align: left;
+}
+.chapter-tab:has(.chapter-menu[open]) {
+  z-index: 30;
+}
+.reader-enlarge-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  cursor: zoom-in;
+}
+.reader-enlarge-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.rail-empty-note {
+  font-size: 10px;
+  color: var(--muted);
+  text-align: center;
+}
+.image-viewer header {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.image-viewer header h2 {
+  font-size: 1rem;
+}
+.image-viewer header .actions {
+  flex-wrap: wrap;
+}
+.image-canvas {
+  position: relative;
+  overflow: hidden;
+}
+.viewer-arrow {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 5;
+  background: var(--panel);
+  opacity: 0.9;
+  padding: 14px 5px;
+  border-radius: 8px;
+}
+.viewer-arrow.previous {
+  left: 10px;
+}
+.viewer-arrow.next {
+  right: 10px;
+}
+.viewer-arrow:disabled {
+  opacity: 0.25;
+}
+.render-candidate-strip > .candidate-tile {
+  position: relative;
+  flex: 0 0 88px;
+  height: 74px;
+}
+.candidate-tile > button {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  position: relative;
+  overflow: hidden;
+}
+.candidate-tile > button.selected {
+  border: 2px solid var(--accent);
+}
+.candidate-check {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  z-index: 2;
+  margin: 0;
+}
+.candidate-check input {
+  margin: 0;
+  width: 17px;
+  height: 17px;
+}
+.result-grid > .image-card small {
+  display: block;
+}
+@media (max-width: 600px) {
+  .bookshelf-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+  }
+  .book-cover span {
+    font-size: 20px;
+  }
+  .image-viewer header {
+    padding: 8px;
+  }
+  .image-viewer header button {
+    padding: 6px;
+  }
+  .viewer-arrow {
+    padding: 9px 2px;
+  }
+}
+.image-viewer.fullscreen {
+  inset: 0;
+  border: 0;
+  border-radius: 0;
+}
+.image-viewer header h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}

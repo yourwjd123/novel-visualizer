@@ -1810,3 +1810,181 @@ def test_per_node_preset_precedes_group_default(work):
     assert (
         work.generation_options(plan="雨夜渡口。")["selected"] == "choose:node-choice"
     )
+
+
+def test_multiple_results_sorted_chapter_scene_and_idempotent(work, tmp_path):
+    work.confirm_split(rows())
+    first = work.segment
+    scenes = work.project.scenes(first)
+    for i, scene in enumerate(reversed(scenes)):
+        work.set_selection(scene=scene["id"])
+        work.import_scene_image(picture(tmp_path / f"one{i}.png"))
+        work.choose_results([work.project.jobs()[0]["results"][0]])
+    work.set_selection(scene=scenes[0]["id"])
+    work.import_scene_image(picture(tmp_path / "extra.png"))
+    source = work.project.jobs()[0]["results"][0]
+    work.choose_results([source, source])
+    records = work.project.final_results()
+    assert len(records) == 3 and [r["scene"] for r in records] == [
+        scenes[0]["id"],
+        scenes[0]["id"],
+        scenes[1]["id"],
+    ]
+    count = len(list((work.project.path / "06_最终成果").glob("*.png")))
+    work.choose_results([source])
+    assert len(work.project.final_results()) == 3
+    assert len(list((work.project.path / "06_最终成果").glob("*.png"))) == count
+    work.choose_results([source], False)
+    assert len(work.project.final_results()) == 2 and work.file(source).is_file()
+    work.choose_results([source])
+    assert len(work.project.final_results()) == 3
+    assert len(list((work.project.path / "06_最终成果").glob("*.png"))) == count
+    assert (
+        work.project.progress()["illustrated_scenes"] == 2
+        and work.project.progress()["results"] == 3
+    )
+    second = work.import_text("第二章", "甲站在桥上。")
+    work.finish_assets([])
+    work.confirm_split(
+        [dict(title="桥上", summary="", start_paragraph=1, end_paragraph=1)]
+    )
+    work.import_scene_image(picture(tmp_path / "chapter2.png"))
+    work.choose_results([work.project.jobs()[0]["results"][0]])
+    work.manage_chapter(ids=[second, first])
+    assert work.project.final_results()[0]["segment"] == second
+    assert len(work.snapshot()["results"]) == 4  # no current-chapter filter
+
+
+def test_result_groups_edit_restore_and_reader_only_selected(work, tmp_path):
+    work.confirm_split(rows())
+    candidates = []
+    for i in range(3):
+        work.import_scene_image(picture(tmp_path / f"candidate{i}.png"))
+        candidates.append(work.project.jobs()[0]["results"][0])
+    assert not work.reader_media(work.segment, 1, 3)["scenes"]
+    work.choose_results(candidates[:2])
+    media = work.reader_media(work.segment, 1, 3)
+    assert len(media["scenes"]) == 1 and len(media["scenes"][0]["images"]) == 2
+    assert {im["state"] for im in media["scenes"][0]["images"]} == {"成果"}
+    ids = [r["id"] for r in work.project.final_results()]
+    work.result_edit(dict(id=ids[1], title="另一张"))
+    work.results_delete([ids[0]])
+    work.results_delete([ids[0]], True)
+    assert len(work.project.final_results()) == 2
+    assert all(work.file(p).is_file() for p in candidates)
+    work.reader_preferences(dict(include_candidates=True))
+    assert len(work.reader_media(work.segment, 1, 3)["scenes"][0]["images"]) == 2
+
+
+def test_reader_asset_with_only_variant_image_has_no_empty_frame(work, tmp_path):
+    a = work.save_asset(dict(name="甲", kind="人物", review="已确认"))
+    work.save_variant(a["id"], "受伤", dict(description="左臂绷带"))
+    asset = (
+        work.project.asset(a["id"])
+        if hasattr(work.project, "asset")
+        else next(x for x in work.project.assets() if x["id"] == a["id"])
+    )
+    relative = work.project.save_asset_image(asset, picture(tmp_path / "variant.png"))
+    asset["variants"][0]["image"] = relative
+    work.project.save_asset(asset)
+    images = work.reader_media(work.segment, 1, 1)["assets"][0]["images"]
+    assert len(images) == 1 and images[0]["title"] == "受伤" and images[0]["thumbnail"]
+    work.file(relative).unlink()
+    assert work.reader_media(work.segment, 1, 1)["assets"] == []
+
+
+def test_book_chapter_names_orders_and_cover_without_switch(work, tmp_path):
+    first = work.project.meta["id"]
+    original = work.project.path
+    chapter = work.segment
+    other = work.store.create_project(work.account, "另一本")
+    identity = other.meta["id"]
+    otherpath = other.path
+    other.close()
+    work.rename_book(identity, "新书名")
+    assert work.project.meta["id"] == first and otherpath.exists()
+    work.update_book_cover(identity, picture(tmp_path / "cover.png"))
+    assert next(b for b in work.bookshelf() if b["id"] == identity)["cover"]
+    work.order_books([identity, first])
+    assert [b["id"] for b in work.bookshelf()] == [identity, first]
+    work.manage_chapter(identity=chapter, name="章节新名")
+    second = work.import_text("另一章", "甲离开。")
+    work.manage_chapter(ids=[second, chapter])
+    assert [c["id"] for c in work.project.segments()] == [second, chapter]
+    assert (
+        work.project.segments()[1]["name"] == "章节新名"
+        and work.project.path == original
+    )
+    with pytest.raises(ValueError):
+        work.manage_chapter(ids=[chapter, chapter])
+    with pytest.raises(ValueError):
+        work.order_books([first])
+    work.close()
+    work.open_project(str(original))
+    assert [c["id"] for c in work.project.segments()] == [second, chapter]
+
+
+def test_chapter_reorder_changes_only_automatic_variant_inheritance(work):
+    first = work.segment
+    second = work.import_text("第二章", "甲来到桥上。")
+    a = work.save_asset(dict(name="甲", kind="人物", review="已确认"))
+    work.set_selection(segment=first)
+    v = work.save_variant(a["id"], "受伤", dict(description="左臂绷带"))
+    asset = next(x for x in work.project.assets() if x["id"] == a["id"])
+    assert (
+        work.project.effective_asset(asset, second)["selected_variant"]["id"] == v["id"]
+    )
+    work.manage_chapter(ids=[second, first])
+    assert (
+        work.project.effective_asset(asset, second)["selected_variant"]["id"] == "base"
+    )
+    work.select_variant(a["id"], v["id"])
+    chosen = work.project.config.get("chapter_variant_selections", {})
+    work.manage_chapter(ids=[first, second])
+    assert chosen == work.project.config.get("chapter_variant_selections", {})
+
+
+def test_shelf_cover_upload_without_open_project_is_scoped(work, tmp_path):
+    identity = work.project.meta["id"]
+    work.close()
+    b = Bridge(work.store.root)
+    b.workspace = work
+    data = base64.b64encode(picture(tmp_path / "cover.png").read_bytes()).decode()
+    b.dispatch(
+        "upload", dict(target="book_cover", asset=identity, name="cover.png", data=data)
+    )
+    assert work.project is None and work.bookshelf()[0]["cover"]
+    with pytest.raises(ValueError):
+        b.dispatch(
+            "upload",
+            dict(
+                target="book_cover",
+                asset="other-account-book",
+                name="cover.png",
+                data=data,
+            ),
+        )
+
+
+def test_old_single_result_keeps_identity_and_recovers_candidate_source(work, tmp_path):
+    work.confirm_split(rows())
+    work.import_scene_image(picture(tmp_path / "old.png"))
+    path = work.project.jobs()[0]["results"][0]
+    work.choose_results([path])
+    record = work.project.final_results()[0]
+    old = dict(record)
+    old.pop("source_path")
+    from novelviz.storage import write_json
+
+    write_json(work.project.path / "06_最终成果/成果索引.json", [old])
+    root = work.project.path
+    work.close()
+    work.open_project(str(root))
+    current = work.project.final_results()[0]
+    assert (
+        current["id"] == record["id"]
+        and current["file"] == record["file"]
+        and current["source_path"] == path
+    )
+    work.choose_results([path])
+    assert len(work.project.final_results()) == 1

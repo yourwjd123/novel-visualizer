@@ -110,6 +110,52 @@ if os.environ.get("NOVELVIZ_WORKFLOW_E2E") == "1":
     desktop.Bridge.confirm = lambda self, title, message: True
     desktop.upload_comfy = fake_upload
     desktop.comfy_call = fake_comfy
+if os.environ.get("NOVELVIZ_GALLERY_E2E") == "1":
+    from novelviz.workspace import Workspace
+    from pathlib import Path
+
+    fixture = Workspace(sys.argv[1])
+    fixture.login(store.accounts[0]["id"])
+    root = fixture.project.path
+    original = fixture.segment
+    scenes = fixture.project.scenes(original)
+    source = root / next(a["image"] for a in fixture.project.assets() if a.get("image"))
+    fixture.set_book_cover(source)
+    fixture.set_selection(scene=scenes[0]["id"])
+    paths = []
+    for _ in range(3):
+        fixture.import_scene_image(source)
+        paths.append(fixture.project.jobs()[0]["results"][0])
+    fixture.choose_results(paths[:2])
+    fixture.set_selection(scene=scenes[1]["id"])
+    fixture.import_scene_image(source)
+    fixture.choose_results([fixture.project.jobs()[0]["results"][0]])
+    second = fixture.import_text("后续章节", "沈青在桥上与摆渡人相遇。")
+    fixture.finish_assets([])
+    fixture.confirm_split(
+        [dict(title="后章相遇", summary="桥上相遇", start_paragraph=1, end_paragraph=1)]
+    )
+    fixture.import_scene_image(source)
+    fixture.choose_results([fixture.project.jobs()[0]["results"][0]])
+    asset = next(a for a in fixture.project.assets() if a["name"] == "沈青")
+    image = asset["image"]
+    asset["image"] = ""
+    asset["variants"] = [
+        dict(
+            id="sole-image",
+            title="副卡唯一图",
+            chapter=original,
+            confirmed=True,
+            revision=1,
+            image=image,
+            data={},
+        )
+    ]
+    fixture.project.save_asset(asset)
+    for name in ["排序样书甲", "排序样书乙"]:
+        extra = store.create_project(store.accounts[0], name)
+        extra.close()
+    fixture.close()
 window = Desktop(sys.argv[1])
 window.resize(1440, 1000)
 window.show()

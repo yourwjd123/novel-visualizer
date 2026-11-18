@@ -39,6 +39,7 @@ DIRS = [
     "08_项目数据",
 ]
 DEFAULTS = dict(
+    bookshelf_order=[],
     workflow_ai_assist=False,
     asset_association_mode="ai",
     language_connection_id="",
@@ -493,7 +494,15 @@ class Store:
         )
 
     def projects(self, a):
-        return sorted((self.account_dir(a) / "项目").glob("*/08_项目数据/project.json"))
+        paths = sorted(
+            (self.account_dir(a) / "项目").glob("*/08_项目数据/project.json")
+        )
+        order = self.settings(a).get("bookshelf_order", [])
+        ranks = {identity: i for i, identity in enumerate(order)}
+        return sorted(
+            paths,
+            key=lambda p: ranks.get(json.loads(p.read_text("utf-8"))["id"], len(ranks)),
+        )
 
     def create_project(self, a, name):
         return Project.create(
@@ -883,9 +892,30 @@ class Project:
 
     def final_results(self):
         path = self.path / "06_最终成果/成果索引.json"
-        return json.loads(path.read_text("utf-8")) if path.exists() else []
+        rows = json.loads(path.read_text("utf-8")) if path.exists() else []
+        chapter_rank = {
+            c["id"]: i for i, c in enumerate(self.segments(include_archived=True))
+        }
+        scene_rank = {
+            s["id"]: i
+            for c in self.segments(include_archived=True)
+            for i, s in enumerate(
+                sorted(
+                    self.scenes(c["id"]),
+                    key=lambda s: (s.get("start_offset", 0), s.get("end_offset", 0)),
+                )
+            )
+        }
+        return sorted(
+            rows,
+            key=lambda r: (
+                chapter_rank.get(r["segment"], len(chapter_rank)),
+                scene_rank.get(r["scene"], 10**9),
+                r.get("selected", ""),
+            ),
+        )
 
-    def register_result(self, scene_id, path, job_id=""):
+    def register_result(self, scene_id, path, job_id="", source_path=""):
         scene = self.scene(scene_id)
         if not scene:
             raise ValueError("请先选择情节")
@@ -893,7 +923,16 @@ class Project:
         if self.path not in path.parents:
             raise ValueError("成果必须位于项目目录")
         rows = self.final_results()
-        rows = [r for r in rows if r["scene"] != scene_id]
+        if any(
+            r["scene"] == scene_id
+            and (
+                r["file"] == path.relative_to(self.path).as_posix()
+                or (source_path and r.get("source_path") == source_path)
+            )
+            for r in rows
+        ):
+            return
+
         rows.append(
             dict(
                 id=uid(),
@@ -903,6 +942,7 @@ class Project:
                 file=path.relative_to(self.path).as_posix(),
                 selected=now(),
                 job=job_id,
+                source_path=source_path,
             )
         )
         write_json(self.path / "06_最终成果/成果索引.json", rows)
@@ -920,6 +960,9 @@ class Project:
             confirmed_assets=sum(a["review"] in ("已确认", "已锁定") for a in assets),
             assets=len(assets),
             results=len(results),
+            illustrated_scenes=len(
+                {r["scene"] for r in results if r["scene"] in {s["id"] for s in scenes}}
+            ),
         )
 
     def save_asset_image(self, asset, path):
@@ -947,6 +990,11 @@ class Project:
             for value in row.get("chapter_levels", {}).values():
                 if value.get("priority") == "可选择":
                     value["priority"] = "建议"
+        rank = {
+            identity: i
+            for i, identity in enumerate(self.config.get("chapter_order", []))
+        }
+        rows.sort(key=lambda r: rank.get(r["id"], len(rank)))
         return (
             rows
             if include_archived

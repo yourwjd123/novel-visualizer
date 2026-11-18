@@ -7,6 +7,43 @@ from .storage import write_json, redact, uid, now
 
 
 class ResultsMixin:
+    def upgrade_result_sources(self):
+        self.require_project()
+        rows = self.project.final_results()
+        changed = False
+        import hashlib
+
+        for r in rows:
+            if (
+                r.get("source_path")
+                or r.get("source_checked")
+                or r.get("source") == "用户替换"
+            ):
+                continue
+            job = next(
+                (j for j in self.project.jobs() if j["id"] == r.get("job")), None
+            )
+            r["source_checked"] = True
+            changed = True
+            if not job or not self.file(r["file"]).is_file():
+                continue
+            candidates = [p for p in job.get("results", []) if self.file(p).is_file()]
+
+            def digest_file(path):
+                with path.open("rb") as stream:
+                    return hashlib.file_digest(stream, "sha256").digest()
+
+            digest = digest_file(self.file(r["file"]))
+            matched = [p for p in candidates if digest_file(self.file(p)) == digest]
+            if len(matched) == 1:
+                r["source_path"] = matched[0]
+                changed = True
+        if changed:
+            write_json(
+                self.project.path / "06_最终成果/成果索引.json",
+                redact(rows, self.secrets()),
+            )
+
     def result_scenes(self):
         self.require_project()
         return [
@@ -36,8 +73,6 @@ class ResultsMixin:
             or scene["segment"] not in {c["id"] for c in self.project.segments()}
         ):
             raise ValueError("请选择当前小说中的有效情节")
-        if any(r["id"] != record["id"] and r["scene"] == scene_id for r in rows):
-            raise ValueError("该情节已有成果，请先处理原成果后再调整关联")
         before = copy.deepcopy(record)
         if replacement:
             replacement = Path(replacement)
@@ -51,6 +86,7 @@ class ResultsMixin:
             shutil.copyfile(replacement, target)
             record["file"] = target.relative_to(self.project.path).as_posix()
             record["source"] = "用户替换"
+            record["source_path"] = ""
         record.update(
             title=title,
             description=description,
@@ -85,8 +121,8 @@ class ResultsMixin:
             raise ValueError("部分成果已变化，请刷新")
         if restore:
             incoming = [r for r in archived if r["id"] in ids]
-            if any(any(r["scene"] == v["scene"] for r in rows) for v in incoming):
-                raise ValueError("对应情节已有成果，请先处理当前成果")
+            if any(r["id"] == v["id"] for r in rows for v in incoming):
+                raise ValueError("成果ID冲突，恢复已停止")
             rows.extend(dict(r, restored=now()) for r in incoming)
             archived = [r for r in archived if r["id"] not in ids]
         else:

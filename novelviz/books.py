@@ -2,7 +2,7 @@
 
 import json
 import shutil
-from .storage import now, uid, write_json
+from .storage import now, uid, write_json, redact
 
 
 class BooksMixin:
@@ -99,3 +99,90 @@ class BooksMixin:
             shutil.rmtree(bucket)
         else:
             shutil.rmtree(bucket)
+
+    def rename_book(self, identity, name):
+        self.guard()
+        info = self.book_info(identity)
+        name = str(name).strip()
+        if not name or len(name) > 100:
+            raise ValueError("书名须为1—100字")
+        from pathlib import Path
+
+        path = Path(info["path"]) / "08_项目数据/project.json"
+        meta = json.loads(path.read_text("utf-8"))
+        meta["name"] = name
+        write_json(path, redact(meta, self.secrets()))
+        if self.project and self.project.meta["id"] == identity:
+            self.project.meta["name"] = name
+
+    def order_books(self, ids):
+        self.require_account()
+        self.guard()
+        active = [b["id"] for b in self.bookshelf()]
+        if (
+            not isinstance(ids, list)
+            or len(ids) != len(set(ids))
+            or set(ids) != set(active)
+        ):
+            raise ValueError("书架已变化，请刷新后重新排序")
+        settings = self.store.settings(self.account)
+        settings["bookshelf_order"] = ids
+        self.store.save_settings(self.account, settings)
+
+    def manage_chapter(self, identity=None, name=None, ids=None):
+        self.require_project()
+        self.guard()
+        chapters = self.project.segments()
+        if ids is not None:
+            active = [c["id"] for c in chapters]
+            if (
+                not isinstance(ids, list)
+                or len(ids) != len(set(ids))
+                or set(ids) != set(active)
+            ):
+                raise ValueError("章节列表已变化，请刷新后排序")
+            order = iter(ids)
+            self.project.config["chapter_order"] = [
+                next(order) if c["id"] in active else c["id"]
+                for c in self.project.segments(include_archived=True)
+            ]
+            self.project.save_config()
+        else:
+            if identity not in {c["id"] for c in chapters}:
+                raise ValueError("章节不存在")
+            name = str(name).strip()
+            if not name or len(name) > 100:
+                raise ValueError("章节名须为1—100字")
+            self.project.db.execute(
+                "UPDATE segments SET name=? WHERE id=?", (name, identity)
+            )
+            self.project.db.commit()
+
+    def update_book_cover(self, identity, path=None):
+        self.require_account()
+        self.guard()
+        info = self.book_info(identity)
+        from pathlib import Path
+
+        root = Path(info["path"])
+        config_file = root / "08_项目数据/workspace.json"
+        config = (
+            self.project.config
+            if self.project and self.project.meta["id"] == identity
+            else (
+                json.loads(config_file.read_text("utf-8"))
+                if config_file.exists()
+                else {}
+            )
+        )
+        if path:
+            path = Path(path)
+            if not self.reader_thumbnail(path):
+                raise ValueError("封面图片无法读取或尺寸过大")
+            dest = root / "01_原始资料/封面" / ("封面_" + uid() + path.suffix.lower())
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, dest)
+            config["book_cover"] = dest.relative_to(root).as_posix()
+        else:
+            config.pop("book_cover", None)
+        write_json(config_file, redact(config, self.secrets()))

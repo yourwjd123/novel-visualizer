@@ -33,7 +33,15 @@ from .prompts import (
 from .storage import DEFAULTS, NODES, Project, Store, now, redact, safe_name, uid
 
 
-class Workspace(BooksMixin, GenerationMixin, ReadingMixin, ResultsMixin, ImportMixin, RenderMixin, TaskMixin):
+class Workspace(
+    BooksMixin,
+    GenerationMixin,
+    ReadingMixin,
+    ResultsMixin,
+    ImportMixin,
+    RenderMixin,
+    TaskMixin,
+):
     def __init__(self, root):
         self.store = Store(root, create_default=False)
         self.account = None
@@ -125,6 +133,7 @@ class Workspace(BooksMixin, GenerationMixin, ReadingMixin, ResultsMixin, ImportM
             for seg in candidate.segments():
                 candidate.ensure_scene(seg["id"])
         self.project.secrets = self.secrets()
+        self.upgrade_result_sources()
         segments = self.project.segments()
         self.segment = segments[0]["id"] if segments else None
         scenes = self.project.scenes(self.segment) if self.segment else []
@@ -344,8 +353,15 @@ class Workspace(BooksMixin, GenerationMixin, ReadingMixin, ResultsMixin, ImportM
                 if self.file(f).exists()
             ]
             result["jobs"].append(record)
+        chapter_names = {c["id"]: c["name"] for c in p.segments(include_archived=True)}
         result["results"] = [
-            dict(r, thumbnail=self.image(r["file"])) for r in p.final_results()
+            dict(
+                r,
+                thumbnail=self.image(r["file"]),
+                chapter_name=chapter_names.get(r["segment"], "已归档章节"),
+                scene_title=(p.scene(r["scene"]) or {}).get("title", r["title"]),
+            )
+            for r in p.final_results()
         ]
         return redact(result, self.secrets())
 
@@ -957,6 +973,36 @@ class Workspace(BooksMixin, GenerationMixin, ReadingMixin, ResultsMixin, ImportM
         self.project.save_job(job)
         self.busy = False
 
+    def choose_results(self, paths, selected=True):
+        self.require_project()
+        self.guard()
+        if not isinstance(paths, list) or not paths:
+            raise ValueError("请先选择候选图片")
+        valid = {
+            p
+            for j in self.project.jobs()
+            if j.get("scene") == self.scene and not j.get("asset")
+            for p in j.get("results", [])
+        }
+        if any(
+            p not in valid
+            or not self.file(p).is_file()
+            or not self.reader_thumbnail(self.file(p))
+            for p in paths
+        ):
+            raise ValueError("部分候选不属于当前情节或文件已丢失")
+        if selected:
+            for path in dict.fromkeys(paths):
+                self.select_result(path)
+        else:
+            ids = [
+                r["id"]
+                for r in self.project.final_results()
+                if r["scene"] == self.scene and r.get("source_path") in paths
+            ]
+            if ids:
+                self.results_delete(ids)
+
     def select_result(self, path, scene=None):
         self.require_project()
         scene = scene or self.scene
@@ -970,7 +1016,26 @@ class Workspace(BooksMixin, GenerationMixin, ReadingMixin, ResultsMixin, ImportM
         )
         if not record:
             raise ValueError("图片不属于当前情节的候选")
+        self.guard()
+        if any(
+            r["scene"] == scene and r.get("source_path") == path
+            for r in self.project.final_results()
+        ):
+            return
+        archived = next(
+            (
+                r
+                for r in self.result_trash()
+                if r["scene"] == scene and r.get("source_path") == path
+            ),
+            None,
+        )
+        if archived:
+            self.results_delete([archived["id"]], restore=True)
+            return
         source = self.file(path)
+        if not source.is_file() or not self.reader_thumbnail(source):
+            raise ValueError("候选图片无法读取")
         title = self.project.scene(scene)["title"]
         dest = (
             self.project.path
@@ -978,4 +1043,4 @@ class Workspace(BooksMixin, GenerationMixin, ReadingMixin, ResultsMixin, ImportM
             / (safe_name(title) + "_" + uid() + source.suffix)
         )
         shutil.copy2(source, dest)
-        self.project.register_result(scene, dest, record["id"])
+        self.project.register_result(scene, dest, record["id"], source_path=path)

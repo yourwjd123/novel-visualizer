@@ -424,7 +424,8 @@ export default function App() {
                         width:
                           Math.min(
                             100,
-                            (s.progress.results /
+                            ((s.progress.illustrated_scenes ??
+                              s.progress.results) /
                               Math.max(1, s.progress.scenes)) *
                               100,
                           ) + "%",
@@ -475,7 +476,7 @@ export default function App() {
             </button>
             <div className="sidebar-spacer" />
             <p className="side-label sidebar-note">
-              v0.10.0-beta.1 · 测试版
+              v0.11.0-beta.1 · 测试版
               <br />
               既有文本 → 视觉资产 → 插图
             </p>

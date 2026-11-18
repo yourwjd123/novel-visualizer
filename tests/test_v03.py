@@ -125,7 +125,7 @@ def test_selected_results_are_scene_linked(window):
     p.register_result(window.scene_id, dest, "job-b")
     assert len(p.final_results()) == 1
     assert p.final_results()[0]["scene"] == window.scene_id
-    assert p.final_results()[0]["job"] == "job-b"
+    assert p.final_results()[0]["job"] == "job-a"
     assert p.progress()["results"] == 1
 
 

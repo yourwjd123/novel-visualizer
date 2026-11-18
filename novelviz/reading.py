@@ -16,7 +16,6 @@ READER_DEFAULTS = dict(
     font="serif",
     paper="warm",
     images_collapsed=False,
-    include_candidates=True,
 )
 
 
@@ -99,6 +98,7 @@ class ReadingMixin:
             READER_DEFAULTS,
             **self.project.config.get("reader", {}).get("preferences", {}),
         )
+        settings.pop("include_candidates", None)
         if data is not None:
             for key in READER_DEFAULTS:
                 if key in data:
@@ -119,7 +119,7 @@ class ReadingMixin:
                     or not low <= settings[key] <= high
                 ):
                     raise ValueError("阅读参数超出范围")
-            for key in ("images_collapsed", "include_candidates"):
+            for key in ("images_collapsed",):
                 if type(settings[key]) is not bool:
                     raise ValueError("阅读开关无效")
             self.project.config.setdefault("reader", {})["preferences"] = settings
@@ -320,25 +320,18 @@ class ReadingMixin:
             ]
             for im in images:
                 im["thumbnail"] = self.image(im["path"])
-            if any(im["thumbnail"] for im in images):
+            images = [im for im in images if im["thumbnail"]]
+            if images:
                 assets.append(
                     dict(id=a["id"], name=a["name"], kind=a["kind"], images=images)
                 )
         results = self.project.final_results()
-        jobs = self.project.jobs()
         pictures = []
         for scene in scenes:
             images = [
                 dict(title=r["title"], path=r["file"], state="成果", result_id=r["id"])
                 for r in results
                 if r["scene"] == scene["id"]
-            ]
-            images += [
-                dict(title=scene["title"], path=path, state="候选")
-                for j in jobs
-                if j.get("scene") == scene["id"] and not j.get("asset")
-                for path in j.get("results", [])
-                if path not in self.project.config.get("hidden_scene_candidates", [])
             ]
             for im in images:
                 im["thumbnail"] = self.image(im["path"])

@@ -1,8 +1,15 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Plus, LocateFixed, Undo2, ChevronRight } from "lucide-react";
+import {
+  Plus,
+  LocateFixed,
+  Undo2,
+  ChevronRight,
+  MoreHorizontal,
+} from "lucide-react";
 import { useWorkspace, copy, freshId } from "./context";
 import { PageHeading, Empty, DropZone } from "./App";
 import { api } from "./api";
+import { NameDialog } from "./BookManagement";
 
 export default function SourcePage() {
   const {
@@ -16,6 +23,25 @@ export default function SourcePage() {
     setAssetEdit,
     dirty,
   } = useWorkspace();
+  const [renaming, setRenaming] = useState(null);
+  const dragChapter = useRef(null);
+  async function dropChapter(target) {
+    const source = dragChapter.current;
+    dragChapter.current = null;
+    if (!source || source === target || s.busy) return;
+    if (dirty.current) {
+      notify("请先保存当前情节编辑，再拖动章节排序");
+      return;
+    }
+    const ids = s.segments.map((c) => c.id).filter((id) => id !== source);
+    ids.splice(ids.indexOf(target), 0, source);
+    if (await run("chapter_manage", { ids })) {
+      dirty.current = false;
+      notify(
+        "章节顺序已保存；自动副卡继承按新顺序计算，人工选择与历史成果保留",
+      );
+    }
+  }
   const [rows, setRows] = useState([]),
     [selected, setSelected] = useState(0),
     [edit, setEdit] = useState(null),
@@ -192,6 +218,14 @@ export default function SourcePage() {
     );
   return (
     <>
+      {renaming && (
+        <NameDialog
+          title="章节更名"
+          value={renaming.name}
+          onClose={() => setRenaming(null)}
+          onSave={(name) => run("chapter_manage", { id: renaming.id, name })}
+        />
+      )}
       <PageHeading
         title="原文与情节"
         subtitle="保留原文，整理需要可视化的情节与关键瞬间。"
@@ -400,6 +434,29 @@ export default function SourcePage() {
               {s.segments.map((ch, i) => (
                 <div
                   key={ch.id}
+                  draggable={!s.busy}
+                  onDragStart={(e) => {
+                    if (e.target.closest(".chapter-menu")) {
+                      e.preventDefault();
+                      return;
+                    }
+                    dragChapter.current = ch.id;
+                    e.dataTransfer.setData(
+                      "application/x-novel-chapter",
+                      ch.id,
+                    );
+                    e.dataTransfer.effectAllowed = "move";
+                  }}
+                  onDragOver={(e) => {
+                    if (dragChapter.current) e.preventDefault();
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    dropChapter(ch.id);
+                  }}
+                  onDragEnd={() => {
+                    dragChapter.current = null;
+                  }}
                   className={
                     "chapter-tab " + (ch.id === s.segment ? "active" : "")
                   }
@@ -417,20 +474,35 @@ export default function SourcePage() {
                   >
                     {i + 1} · {ch.name}
                   </button>
-                  <button
-                    aria-label={"删除章节 " + ch.name}
-                    disabled={s.busy}
-                    onClick={() => {
-                      if (
-                        window.confirm(
-                          "归档此章节卡？原文、资产和历史保留，可恢复。",
-                        )
-                      )
-                        run("chapter_action", { id: ch.id });
+                  <details
+                    className="chapter-menu"
+                    onClick={(e) => {
+                      if (e.target.closest("button"))
+                        e.currentTarget.open = false;
                     }}
                   >
-                    ×
-                  </button>
+                    <summary aria-label={"管理章节 " + ch.name}>
+                      <MoreHorizontal size={14} />
+                    </summary>
+                    <div>
+                      <button disabled={s.busy} onClick={() => setRenaming(ch)}>
+                        更名
+                      </button>
+                      <button
+                        disabled={s.busy}
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              "归档此章节卡？原文、资产和历史保留，可恢复。",
+                            )
+                          )
+                            run("chapter_action", { id: ch.id });
+                        }}
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </details>
                 </div>
               ))}
             </div>

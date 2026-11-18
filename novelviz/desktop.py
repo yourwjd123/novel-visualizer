@@ -162,6 +162,7 @@ class Bridge(QObject):
         w = self.workspace
         if d.get("_project") and op not in (
             "state",
+            "viewer_fullscreen",
             "login",
             "logout",
             "account_create",
@@ -171,6 +172,17 @@ class Bridge(QObject):
         ):
             if not w.project or d["_project"] != w.project.meta["id"]:
                 raise ValueError("项目已切换，已拒绝旧页面请求；原输入仍保留")
+        if op == "viewer_fullscreen":
+            if not self.host:
+                return dict(fullscreen=False)
+            if d.get("enabled"):
+                if not hasattr(self, "viewer_window_state"):
+                    self.viewer_window_state = self.host.windowState()
+                self.host.showFullScreen()
+            elif hasattr(self, "viewer_window_state"):
+                self.host.setWindowState(self.viewer_window_state)
+                del self.viewer_window_state
+            return dict(fullscreen=self.host.isFullScreen())
         if op == "state":
             return self.state()
         if op == "close_ready":
@@ -224,6 +236,16 @@ class Bridge(QObject):
             path = str(p.path)
             p.close()
             w.open_project(path)
+        elif op == "book_rename":
+            w.rename_book(d["id"], d["name"])
+        elif op == "book_order":
+            w.order_books(d["ids"])
+        elif op == "book_cover_clear":
+            w.update_book_cover(d["id"])
+        elif op == "chapter_manage":
+            w.manage_chapter(d.get("id"), d.get("name"), d.get("ids"))
+        elif op == "choose_results":
+            w.choose_results(d["paths"], bool(d.get("selected", True)))
         elif op == "book_info":
             return w.book_info(d["id"])
         elif op == "book_delete":
@@ -714,7 +736,12 @@ class Bridge(QObject):
 
     def upload(self, d):
         w = self.workspace
-        w.require_project()
+        if d.get("target") == "book_cover" and d.get("asset"):
+            w.require_account()
+            w.guard()
+            w.book_info(d["asset"])
+        else:
+            w.require_project()
         raw = base64.b64decode(d["data"], validate=True)
         if len(raw) > 25 * 1024 * 1024:
             raise ValueError("单文件限 25 MB")
@@ -730,7 +757,12 @@ class Bridge(QObject):
         )
         if ext not in permitted:
             raise ValueError("不支持此文件类型")
-        dest = w.project.path / "01_原始资料/其他附件" / (uid() + "_" + name)
+        stage = (
+            w.store.account_dir(w.account) / "界面资源"
+            if target == "book_cover" and d.get("asset")
+            else w.project.path / "01_原始资料/其他附件"
+        )
+        dest = stage / (uid() + "_" + name)
         dest.write_bytes(raw)
         if target == "text":
             try:
@@ -741,7 +773,9 @@ class Bridge(QObject):
                 dest.unlink(missing_ok=True)
         elif target == "book_cover":
             try:
-                w.set_book_cover(dest)
+                w.update_book_cover(d["asset"], dest) if d.get(
+                    "asset"
+                ) else w.set_book_cover(dest)
             finally:
                 dest.unlink(missing_ok=True)
         elif target == "result_image":
@@ -1238,7 +1272,7 @@ class LocalPage(QWebEnginePage):
 class Desktop(QMainWindow):
     def __init__(self, root):
         super().__init__()
-        self.setWindowTitle("墨境 · 小说文本可视化 · v0.10.0-beta.1 测试版")
+        self.setWindowTitle("墨境 · 小说文本可视化 · v0.11.0-beta.1 测试版")
         self.bridge = Bridge(root, self)
         self.view = QWebEngineView(self)
         page = LocalPage(self.view)

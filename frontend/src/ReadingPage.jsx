@@ -27,15 +27,37 @@ import {
   Trash2,
   Maximize2,
 } from "lucide-react";
-import { api } from "./api";
+import { api, upload } from "./api";
 import { useWorkspace } from "./context";
 import { Empty, PageHeading } from "./App";
 
-import { DeleteBook } from "./BookManagement";
+import { DeleteBook, NameDialog } from "./BookManagement";
 
 export function Bookshelf() {
   const { s, run, notify, setModal, navigate } = useWorkspace();
-  const [deleting, setDeleting] = useState(null);
+  const [deleting, setDeleting] = useState(null),
+    [renaming, setRenaming] = useState(null);
+  const coverInput = useRef(null),
+    coverBook = useRef(null),
+    dragBook = useRef(null),
+    shelfAccount = useRef(null);
+  const reload = () =>
+    api("bookshelf")
+      .then(setBooks)
+      .catch((e) => notify(e.message));
+  async function dropBook(target) {
+    const source = dragBook.current;
+    dragBook.current = null;
+    if (!source || source === target || s.busy) return;
+    const next = books.filter((b) => b.id !== source),
+      book = books.find((b) => b.id === source);
+    next.splice(
+      next.findIndex((b) => b.id === target),
+      0,
+      book,
+    );
+    if (await run("book_order", { ids: next.map((b) => b.id) })) setBooks(next);
+  }
   const [books, setBooks] = useState([]),
     [loading, setLoading] = useState(false);
   useEffect(() => {
@@ -43,6 +65,10 @@ export function Bookshelf() {
     if (!s.account) {
       setBooks([]);
       return;
+    }
+    if (shelfAccount.current !== s.account.id) {
+      setBooks([]);
+      shelfAccount.current = s.account.id;
     }
     setLoading(true);
     api("bookshelf")
@@ -64,6 +90,38 @@ export function Bookshelf() {
   }
   return (
     <div className="bookshelf">
+      <input
+        ref={coverInput}
+        type="file"
+        accept=".png,.jpg,.jpeg,.webp"
+        hidden
+        aria-label="书架封面文件"
+        onChange={async (e) => {
+          const file = e.target.files[0];
+          e.target.value = "";
+          if (file && coverBook.current) {
+            try {
+              await upload(file, "book_cover", coverBook.current);
+              await reload();
+              notify("封面已更新");
+            } catch (error) {
+              notify(error.message);
+            }
+          }
+        }}
+      />
+      {renaming && (
+        <NameDialog
+          title="小说更名"
+          value={renaming.name}
+          onClose={() => setRenaming(null)}
+          onSave={async (name) => {
+            const ok = await run("book_rename", { id: renaming.id, name });
+            if (ok) await reload();
+            return ok;
+          }}
+        />
+      )}
       {deleting && (
         <DeleteBook
           book={deleting}
@@ -101,32 +159,85 @@ export function Bookshelf() {
             </button>
           }
         />
-      ) : loading ? (
+      ) : loading && !books.length ? (
         <p role="status">正在整理书架…</p>
       ) : books.length ? (
         <div className="bookshelf-grid">
           {books.map((book, index) => (
-            <div className="book-tile" key={book.id}>
+            <div
+              className="book-tile"
+              key={book.id}
+              draggable={!s.busy}
+              onDragStart={(e) => {
+                if (e.target.closest(".book-menu")) {
+                  e.preventDefault();
+                  return;
+                }
+                dragBook.current = book.id;
+                e.dataTransfer.setData("application/x-novel-book", book.id);
+                e.dataTransfer.effectAllowed = "move";
+              }}
+              onDragOver={(e) => {
+                if (dragBook.current) e.preventDefault();
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                dropBook(book.id);
+              }}
+              onDragEnd={() => {
+                dragBook.current = null;
+              }}
+            >
               <button
                 className={"book-cover cover-" + (index % 6)}
                 key={book.id}
                 aria-label={"阅读 " + book.name}
                 onClick={() => open(book)}
               >
-                {book.cover && <img src={book.cover} alt="" />}
+                {book.cover && (
+                  <img src={book.cover} alt="" draggable={false} />
+                )}
                 <span>{book.name}</span>
               </button>
-              <details className="book-menu">
+              <details
+                className="book-menu"
+                onClick={(e) => {
+                  if (e.target.closest("button")) e.currentTarget.open = false;
+                }}
+              >
                 <summary aria-label={"管理小说 " + book.name}>
                   <MoreHorizontal size={18} />
                 </summary>
-                <button
-                  className="danger"
-                  disabled={s.busy}
-                  onClick={() => setDeleting(book)}
-                >
-                  删除小说
-                </button>
+                <div className="book-menu-actions">
+                  <button disabled={s.busy} onClick={() => setRenaming(book)}>
+                    更名
+                  </button>
+                  <button
+                    disabled={s.busy}
+                    onClick={() => {
+                      coverBook.current = book.id;
+                      coverInput.current.click();
+                    }}
+                  >
+                    更改封面图
+                  </button>
+                  <button
+                    disabled={s.busy || !book.cover}
+                    onClick={async () => {
+                      if (await run("book_cover_clear", { id: book.id }))
+                        reload();
+                    }}
+                  >
+                    恢复默认封面
+                  </button>
+                  <button
+                    className="danger"
+                    disabled={s.busy}
+                    onClick={() => setDeleting(book)}
+                  >
+                    删除小说
+                  </button>
+                </div>
               </details>
             </div>
           ))}
@@ -166,6 +277,7 @@ export default function ReadingPage() {
     [range, setRange] = useState([1, 1]),
     [preview, setPreview] = useState(null),
     [largeImage, setLargeImage] = useState(""),
+    [imageError, setImageError] = useState(false),
     [pagination, setPagination] = useState({ page: 0, total: 1 }),
     [ready, setReady] = useState(false);
   const stage = useRef(null),
@@ -422,13 +534,20 @@ export default function ReadingPage() {
   useEffect(() => {
     const n = ++previewSeq.current;
     setLargeImage("");
+    setImageError(false);
     const im = preview?.images[preview.index];
     if (im?.path)
       api("image", { path: im.path, _project: project })
         .then((src) => {
-          if (n === previewSeq.current) setLargeImage(src);
+          if (n === previewSeq.current) {
+            setLargeImage(src);
+            setImageError(!src);
+          }
         })
-        .catch((e) => notify(e.message));
+        .catch((e) => {
+          if (n === previewSeq.current) setImageError(true);
+          notify(e.message);
+        });
     return () => {
       previewSeq.current++;
     };
@@ -441,6 +560,10 @@ export default function ReadingPage() {
       }
       locate(position);
       scanRef.current();
+      setPanel(null);
+      return;
+    }
+    if (id === chapter) {
       setPanel(null);
       return;
     }
@@ -476,6 +599,7 @@ export default function ReadingPage() {
   useEffect(() => {
     function key(e) {
       if (
+        document.querySelector(".image-viewer") ||
         e.target.closest("input,textarea,select") ||
         e.ctrlKey ||
         e.metaKey ||
@@ -520,14 +644,21 @@ export default function ReadingPage() {
     if (chapter && !(await run("select", { segment: chapter }))) return;
     await navigate("assets");
   }
+  function enlargeReading() {
+    if (!largeImage || !preview) return;
+    setLarge({
+      title: preview.name,
+      images: preview.images,
+      index: preview.index,
+      onIndexChange: (index) => setPreview((v) => (v ? { ...v, index } : v)),
+    });
+  }
   const active = data?.chapters.find((c) => c.id === chapter);
   const position = data?.position;
   const scenes = (media.scenes || [])
     .map((group) => ({
       ...group,
-      images: group.images.filter(
-        (im) => prefs?.include_candidates || im.state === "成果",
-      ),
+      images: group.images.filter((im) => im.state === "成果" && im.thumbnail),
     }))
     .filter((group) => group.images.length);
   const assets = media.assets || [];
@@ -563,7 +694,9 @@ export default function ReadingPage() {
               {position
                 ? `上次读到 ${data.chapters.find((c) => c.id === position.chapter)?.name || "已归档章节"}`
                 : "尚无阅读记录"}{" "}
-              · 制作进度 {data.progress.results}/{data.progress.scenes}
+              · 制作进度{" "}
+              {data.progress.illustrated_scenes ?? data.progress.results}/
+              {data.progress.scenes}
             </small>
           </div>
         </div>
@@ -752,16 +885,7 @@ export default function ReadingPage() {
                     <option value="mint">浅绿</option>
                   </select>
                 </label>
-                <label className="check-row">
-                  <input
-                    type="checkbox"
-                    checked={prefs.include_candidates}
-                    onChange={(e) =>
-                      preference({ include_candidates: e.target.checked })
-                    }
-                  />
-                  也显示场景候选图
-                </label>
+
                 <div className="actions">
                   <button
                     className="icon quiet"
@@ -848,9 +972,11 @@ export default function ReadingPage() {
           aria-hidden={prefs.images_collapsed}
           inert={prefs.images_collapsed ? true : undefined}
         >
-          <div className="rail-category" title="资产图">
-            <UserRound size={17} />
-          </div>
+          {!!assets.length && (
+            <div className="rail-category" title="资产图">
+              <UserRound size={17} />
+            </div>
+          )}
           {assets.map((group) => (
             <button
               className="reader-thumb"
@@ -865,9 +991,11 @@ export default function ReadingPage() {
               />
             </button>
           ))}
-          <div className="rail-category" title="场景图">
-            <Images size={17} />
-          </div>
+          {!!scenes.length && (
+            <div className="rail-category" title="场景成果">
+              <Images size={17} />
+            </div>
+          )}
           {scenes.map((group) => (
             <button
               className="reader-thumb landscape"
@@ -880,11 +1008,9 @@ export default function ReadingPage() {
             </button>
           ))}
           {!assets.length && !scenes.length && (
-            <ImageOff
-              className="rail-empty"
-              size={22}
-              aria-label="当前范围暂无图片"
-            />
+            <span className="rail-empty-note" title="当前阅读范围暂无图片">
+              暂无图
+            </span>
           )}
         </aside>
         {preview && (
@@ -917,12 +1043,22 @@ export default function ReadingPage() {
             </small>
             <div className="reader-preview-image">
               {largeImage ? (
-                <img
-                  src={largeImage}
-                  alt={preview.images[preview.index].title}
-                />
+                <button
+                  className="reader-enlarge-image quiet"
+                  aria-label="点击阅读图片查看大图"
+                  onClick={enlargeReading}
+                >
+                  <img
+                    src={largeImage}
+                    alt={preview.images[preview.index].title}
+                  />
+                </button>
               ) : preview.images[preview.index].path ? (
-                <span>正在读取图片…</span>
+                <span>
+                  {imageError
+                    ? "图片无法读取，请检查对应图片文件。"
+                    : "正在读取图片…"}
+                </span>
               ) : (
                 <span>主卡尚无图片，可翻看已有副卡。</span>
               )}
@@ -946,12 +1082,7 @@ export default function ReadingPage() {
                 title="放大查看"
                 aria-label="放大阅读图片"
                 disabled={!preview.images[preview.index].path}
-                onClick={() =>
-                  setLarge({
-                    path: preview.images[preview.index].path,
-                    title: preview.name,
-                  })
-                }
+                onClick={enlargeReading}
               >
                 <Maximize2 size={18} />
               </button>

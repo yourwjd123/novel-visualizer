@@ -10,11 +10,15 @@ export default function PicturePanel({ asset = null }) {
     )
     .flatMap((j) => (j.pictures || []).map((p) => ({ ...p, job: j })));
   const visible = pictures.filter((p) => !p.hidden),
-    [selected, setSelected] = useState("");
+    [selected, setSelected] = useState(""),
+    [checked, setChecked] = useState(new Set());
   const current = visible.find((p) => p.path === selected) || visible.at(-1);
-  const result = s.results.find((r) => r.scene === s.scene);
+  const results = s.results.filter((r) => r.scene === s.scene);
+  const result =
+    current && results.find((r) => (r.source_path || r.file) === current.path);
   useEffect(() => {
     setSelected("");
+    setChecked(new Set());
   }, [asset, s.scene]);
   const upload = (files) => uploadFiles(files, "scene_image");
   return (
@@ -42,7 +46,11 @@ export default function PicturePanel({ asset = null }) {
             aria-label="放大当前候选"
             onClick={() =>
               setLarge({
-                path: current.path,
+                images: visible.map((p) => ({
+                  path: p.path,
+                  title: p.job.original_name || "插图候选",
+                })),
+                index: visible.findIndex((p) => p.path === current.path),
                 title: current.job.original_name || "插图候选",
               })
             }
@@ -58,18 +66,73 @@ export default function PicturePanel({ asset = null }) {
       </div>
       <div className="render-candidate-strip">
         {visible.map((p, i) => (
-          <button
-            aria-label={"选择候选 " + (i + 1)}
-            className={current?.path === p.path ? "selected" : ""}
-            key={p.path}
-            onClick={() => setSelected(p.path)}
-          >
-            <img src={p.thumbnail} alt="" />
-            {!asset && result?.file === p.path && <span>已选成果</span>}
-            {asset && <span>候选 {i + 1}</span>}
-          </button>
+          <div className="candidate-tile" key={p.path}>
+            <button
+              aria-label={"选择候选 " + (i + 1)}
+              className={current?.path === p.path ? "selected" : ""}
+              key={p.path}
+              onClick={() => setSelected(p.path)}
+            >
+              <img src={p.thumbnail} alt="" />
+              {!asset &&
+                results.some((r) => (r.source_path || r.file) === p.path) && (
+                  <span>已选成果</span>
+                )}
+              {asset && <span>候选 {i + 1}</span>}
+            </button>
+            {!asset && (
+              <label className="candidate-check">
+                <input
+                  type="checkbox"
+                  aria-label={"勾选候选 " + (i + 1)}
+                  checked={checked.has(p.path)}
+                  onChange={() =>
+                    setChecked((old) => {
+                      const next = new Set(old);
+                      next.has(p.path) ? next.delete(p.path) : next.add(p.path);
+                      return next;
+                    })
+                  }
+                />
+              </label>
+            )}
+          </div>
         ))}
       </div>
+      {!asset && !!checked.size && (
+        <div className="actions">
+          <span>已勾选 {checked.size} 张</span>
+          <button
+            onClick={() => setChecked(new Set(visible.map((p) => p.path)))}
+          >
+            全选候选
+          </button>
+          <button
+            disabled={s.busy}
+            onClick={async () => {
+              if (await run("choose_results", { paths: [...checked] }))
+                setChecked(new Set());
+            }}
+          >
+            批量选为成果
+          </button>
+          <button
+            disabled={s.busy}
+            onClick={async () => {
+              if (
+                await run("choose_results", {
+                  paths: [...checked],
+                  selected: false,
+                })
+              )
+                setChecked(new Set());
+            }}
+          >
+            批量取消选定
+          </button>
+          <button onClick={() => setChecked(new Set())}>取消勾选</button>
+        </div>
+      )}
       <div className="actions">
         {!asset && (
           <DropZone
@@ -86,7 +149,7 @@ export default function PicturePanel({ asset = null }) {
               disabled={s.busy}
               onClick={() =>
                 run(
-                  asset ? "candidate_to_reference" : "choose_result",
+                  asset ? "candidate_to_reference" : "choose_results",
                   asset
                     ? {
                         asset,
@@ -94,15 +157,11 @@ export default function PicturePanel({ asset = null }) {
                         variant: s.assets.find((a) => a.id === asset)?.effective
                           ?.selected_variant?.id,
                       }
-                    : { path: current.path },
+                    : { paths: [current.path], selected: !result },
                 )
               }
             >
-              {asset
-                ? "采用为参考图"
-                : result?.file === current.path
-                  ? "已选为成果"
-                  : "选为成果"}
+              {asset ? "采用为参考图" : result ? "取消选为成果" : "选为成果"}
             </button>
             {!asset && (
               <button

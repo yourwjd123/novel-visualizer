@@ -185,3 +185,53 @@ export function BookTrash() {
     </section>
   );
 }
+
+export function NameDialog({ title, value, onClose, onSave }) {
+  const [name, setName] = useState(value),
+    [waiting, setWaiting] = useState(false);
+  return (
+    <div className="modal-shade">
+      <section className="modal" role="dialog" aria-label={title}>
+        <div className="modal-heading">
+          <h2>{title}</h2>
+          <button
+            className="icon"
+            disabled={waiting}
+            aria-label="关闭更名窗口"
+            onClick={onClose}
+          >
+            <X size={18} />
+          </button>
+        </div>
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            setWaiting(true);
+            if (await onSave(name.trim())) onClose();
+            setWaiting(false);
+          }}
+        >
+          <label>
+            名称
+            <input
+              aria-label="新名称"
+              autoFocus
+              required
+              maxLength={100}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </label>
+          <div className="actions">
+            <button type="button" onClick={onClose}>
+              取消
+            </button>
+            <button className="primary" disabled={waiting || !name.trim()}>
+              保存名称
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}

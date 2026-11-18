@@ -1,5 +1,9 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
+  ChevronLeft,
+  ChevronRight,
+  Maximize2,
+  Minimize2,
   Expand,
   Plus,
   Check,
@@ -201,13 +205,32 @@ export function ResultsPage() {
     if (await run("results_delete", { ids })) {
       setSelected(new Set());
       notify("成果已移入已删除列表");
+      return true;
     }
+    return false;
+  }
+  const groups = [];
+  for (const result of s.results) {
+    let group = groups.find((g) => g.scene === result.scene);
+    if (!group) {
+      group = { scene: result.scene, items: [] };
+      groups.push(group);
+    }
+    group.items.push(result);
+  }
+  function openGroup(group) {
+    setLarge({
+      title: group.items[0].scene_title || group.items[0].title,
+      images: group.items.map((r) => ({ ...r, path: r.file, result: r })),
+      onEdit: (item) => setEditing(item.result),
+      onDelete: (item) => remove([item.result.id]),
+    });
   }
   return (
     <>
       <PageHeading
         title="成果集"
-        subtitle="已选定插图按情节回链；原文、引用资产及生成快照保留在项目中。"
+        subtitle="整本小说成果同页展示，按章节与情节排序；点击卡片翻看同一情节的全部成果。"
         actions={
           <>
             <button
@@ -234,46 +257,57 @@ export function ResultsPage() {
         }
       />
       <div className="result-grid">
-        {s.results.map((r) => (
-          <ImageCard
-            key={r.id}
-            image={r.thumbnail}
-            title={r.title}
-            subtitle={r.selected}
-            badge="已选定"
-            selected={selected.has(r.id)}
-            onSelect={() =>
-              setSelected((prev) => {
-                const next = new Set(prev);
-                next.has(r.id) ? next.delete(r.id) : next.add(r.id);
-                return next;
-              })
-            }
-            onOpen={() => setLarge({ path: r.file, title: r.title })}
-          >
-            <footer>
-              <button onClick={() => setEditing(r)}>编辑</button>
-              <button className="danger" onClick={() => remove([r.id])}>
-                删除
-              </button>
-              <button
-                className="quiet"
-                onClick={async () => {
-                  if (await run("select", { scene: r.scene }))
-                    navigate("images");
-                }}
-              >
-                返回情节
-              </button>
-              <button
-                className="quiet"
-                onClick={() => run("reveal", { path: r.file })}
-              >
-                打开原文件
-              </button>
-            </footer>
-          </ImageCard>
-        ))}
+        {groups.map((group) => {
+          const r = group.items[0],
+            ids = group.items.map((v) => v.id);
+          return (
+            <ImageCard
+              key={group.scene}
+              image={r.thumbnail}
+              title={r.title}
+              subtitle={r.chapter_name}
+              badge={"已选定 · " + ids.length + " 张"}
+              selected={ids.every((id) => selected.has(id))}
+              onSelect={() =>
+                setSelected((old) => {
+                  const next = new Set(old);
+                  if (ids.every((id) => next.has(id)))
+                    ids.forEach((id) => next.delete(id));
+                  else ids.forEach((id) => next.add(id));
+                  return next;
+                })
+              }
+              onOpen={() => openGroup(group)}
+            >
+              <footer>
+                <button onClick={() => setEditing(r)}>编辑</button>
+                <button className="danger" onClick={() => remove(ids)}>
+                  {ids.length > 1 ? "删除本组" : "删除"}
+                </button>
+                <button
+                  className="quiet"
+                  onClick={async () => {
+                    if (await run("select", { scene: r.scene }))
+                      navigate("images");
+                  }}
+                >
+                  返回情节
+                </button>
+                <button
+                  className="quiet"
+                  onClick={() => run("reveal", { path: r.file })}
+                >
+                  打开原文件
+                </button>
+              </footer>
+              {ids.length > 1 && (
+                <small className="muted">
+                  点击图片翻页，可编辑或删除其中一张。
+                </small>
+              )}
+            </ImageCard>
+          );
+        })}
       </div>
       {!!trash.length && (
         <details>
@@ -438,40 +472,134 @@ function ResultEditor({ result, onClose }) {
 
 export function ImageViewer({ image, onClose }) {
   const { notify } = useWorkspace();
-  const [src, setSrc] = useState(image.thumbnail || ""),
+  const items = image.images?.length ? image.images : [image];
+  const [index, setIndex] = useState(
+      Math.max(0, Math.min(image.index || 0, items.length - 1)),
+    ),
+    [src, setSrc] = useState(""),
+    [failed, setFailed] = useState(false),
     [scale, setScale] = useState(1),
-    [offset, setOffset] = useState({ x: 0, y: 0 });
-  const drag = useRef(null);
+    [offset, setOffset] = useState({ x: 0, y: 0 }),
+    [fullscreen, setFullscreen] = useState(false);
+  const drag = useRef(null),
+    full = useRef(false);
+  const item = items[index];
+  async function toggleFull(enabled) {
+    full.current = enabled;
+    setFullscreen(enabled);
+    try {
+      const result = await api("viewer_fullscreen", { enabled });
+      full.current = !!result.fullscreen;
+      setFullscreen(!!result.fullscreen);
+    } catch (e) {
+      full.current = !enabled;
+      setFullscreen(!enabled);
+      notify(e.message);
+    }
+  }
+  async function close() {
+    if (full.current) await toggleFull(false);
+    onClose();
+  }
+  function turn(delta) {
+    const next = index + delta;
+    if (next < 0 || next >= items.length) return;
+    setIndex(next);
+    image.onIndexChange?.(next);
+  }
+  useEffect(
+    () => () => {
+      if (full.current) {
+        full.current = false;
+        api("viewer_fullscreen", { enabled: false }).catch(() => {});
+      }
+    },
+    [],
+  );
   useEffect(() => {
-    let active = true;
-    api("image", { path: image.path })
-      .then((value) => {
-        if (active) setSrc(value);
+    let alive = true;
+    setSrc("");
+    setFailed(false);
+    setScale(1);
+    setOffset({ x: 0, y: 0 });
+    drag.current = null;
+    api("image", { path: item.path })
+      .then((v) => {
+        if (alive) {
+          setSrc(v);
+          setFailed(!v);
+        }
       })
-      .catch((e) => notify(e.message));
-    const key = (e) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", key);
+      .catch((e) => {
+        if (alive) setFailed(true);
+        notify(e.message);
+      });
     return () => {
-      active = false;
-      window.removeEventListener("keydown", key);
+      alive = false;
     };
-  }, [image.path]);
+  }, [item.path]);
+  useEffect(() => {
+    const key = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (full.current) toggleFull(false);
+        else close();
+      } else if (
+        ["ArrowLeft", "ArrowRight"].includes(e.key) &&
+        !e.target.closest("input,textarea,select")
+      ) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        turn(e.key === "ArrowRight" ? 1 : -1);
+      }
+    };
+    window.addEventListener("keydown", key, true);
+    return () => window.removeEventListener("keydown", key, true);
+  }, [index, items.length]);
   return (
     <div
-      className="image-viewer"
+      className={"image-viewer" + (fullscreen ? " fullscreen" : "")}
       role="dialog"
       aria-modal="true"
       aria-label="图片大图查看"
     >
       <header>
-        <h2>{image.title}</h2>
+        <h2>
+          {image.title}
+          {item.title && item.title !== image.title ? " · " + item.title : ""}
+          {items.length > 1 && (
+            <small>
+              {" "}
+              · {index + 1} / {items.length}
+            </small>
+          )}
+        </h2>
         <div className="actions">
+          {image.onEdit && (
+            <button
+              onClick={async () => {
+                await close();
+                image.onEdit(item);
+              }}
+            >
+              编辑当前成果
+            </button>
+          )}
+          {image.onDelete && (
+            <button
+              className="danger"
+              onClick={async () => {
+                if (await image.onDelete(item)) close();
+              }}
+            >
+              删除当前成果
+            </button>
+          )}
           <button
             className="icon"
             aria-label="缩小"
-            onClick={() => setScale(Math.max(0.25, scale / 1.2))}
+            onClick={() => setScale((v) => Math.max(0.25, v / 1.2))}
           >
             <ZoomOut size={17} />
           </button>
@@ -479,7 +607,7 @@ export function ImageViewer({ image, onClose }) {
           <button
             className="icon"
             aria-label="放大"
-            onClick={() => setScale(Math.min(6, scale * 1.2))}
+            onClick={() => setScale((v) => Math.min(6, v * 1.2))}
           >
             <ZoomIn size={17} />
           </button>
@@ -492,7 +620,15 @@ export function ImageViewer({ image, onClose }) {
             <RotateCcw size={14} />
             复位
           </button>
-          <button className="icon" aria-label="关闭大图" onClick={onClose}>
+          <button
+            className="icon"
+            aria-label={fullscreen ? "退出全屏" : "全屏查看"}
+            title={fullscreen ? "退出全屏（Esc）" : "全屏查看"}
+            onClick={() => toggleFull(!full.current)}
+          >
+            {fullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+          </button>
+          <button className="icon" aria-label="关闭大图" onClick={close}>
             <X size={18} />
           </button>
         </div>
@@ -505,6 +641,7 @@ export function ImageViewer({ image, onClose }) {
           )
         }
         onPointerDown={(e) => {
+          if (e.target.closest("button")) return;
           drag.current = { x: e.clientX - offset.x, y: e.clientY - offset.y };
           e.currentTarget.setPointerCapture(e.pointerId);
         }}
@@ -515,19 +652,48 @@ export function ImageViewer({ image, onClose }) {
               y: e.clientY - drag.current.y,
             });
         }}
-        onPointerUp={() => (drag.current = null)}
+        onPointerUp={() => {
+          drag.current = null;
+        }}
+        onPointerCancel={() => {
+          drag.current = null;
+        }}
       >
+        {items.length > 1 && (
+          <button
+            className="viewer-arrow previous"
+            aria-label="上一张图片"
+            disabled={index === 0}
+            onClick={() => turn(-1)}
+          >
+            <ChevronLeft size={30} />
+          </button>
+        )}
         {src ? (
           <img
-            draggable="false"
+            draggable={false}
             src={src}
-            alt={image.title}
+            alt={item.title || image.title}
+            onError={() => {
+              setFailed(true);
+              setSrc("");
+            }}
             style={{
               transform: `translate(${offset.x}px,${offset.y}px) scale(${scale})`,
             }}
           />
         ) : (
-          <p>正在读取原图…</p>
+          <p>{failed ? "图片无法读取，请检查原文件。" : "正在读取原图…"}</p>
+        )}
+        {items.length > 1 && (
+          <button
+            className="viewer-arrow next"
+            aria-label="下一张图片"
+            disabled={index === items.length - 1}
+            onClick={() => turn(1)}
+          >
+            <ChevronRight size={30} />
+          </button>
         )}
       </div>
     </div>
