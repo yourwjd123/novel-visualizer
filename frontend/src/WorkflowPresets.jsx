@@ -5,6 +5,7 @@ import { useWorkspace, freshId } from "./context";
 
 export default function WorkflowPresets({
   connection,
+  onlyConnection = null,
   image,
   setImageField,
   onEditConnection,
@@ -83,8 +84,10 @@ export default function WorkflowPresets({
     setWarnings(p.warnings || []);
     setEditing(p);
   };
-  const connections = s.connections.filter((c) =>
-    ["comfy", "image_api"].includes(c.kind),
+  const connections = s.connections.filter(
+    (c) =>
+      ["comfy", "image_api"].includes(c.kind) &&
+      (!onlyConnection || c.id === onlyConnection),
   );
   return (
     <section className="workflow-presets">
@@ -110,9 +113,11 @@ export default function WorkflowPresets({
               </span>
             </div>
             <div className="actions">
-              <button onClick={() => setImageField("connection_id", c.id)}>
-                选择此连接
-              </button>
+              {!onlyConnection && (
+                <button onClick={() => setImageField("connection_id", c.id)}>
+                  选择此连接
+                </button>
+              )}
               {onEditConnection && (
                 <button onClick={() => onEditConnection(c)}>
                   编辑连接 / 密钥
@@ -161,12 +166,29 @@ export default function WorkflowPresets({
                         </small>
                       </div>
                       <button
-                        onClick={() => {
-                          setImageField("connection_id", c.id);
-                          setImageField("preset_id", p.id);
+                        disabled={s.busy || !!p.validation_error}
+                        onClick={async () => {
+                          if (onlyConnection) {
+                            if (
+                              await run("workflow_preset_save", {
+                                ...p,
+                                default: true,
+                              })
+                            )
+                              load();
+                          } else {
+                            setImageField("connection_id", c.id);
+                            setImageField("preset_id", p.id);
+                          }
                         }}
                       >
-                        {image.preset_id === p.id ? "已选预设" : "设为首选"}
+                        {onlyConnection
+                          ? p.default
+                            ? "默认预设"
+                            : "设为同数量默认"
+                          : image.preset_id === p.id
+                            ? "已选预设"
+                            : "设为首选"}
                       </button>
                       <button onClick={() => begin({ ...p })}>编辑</button>
                       <button

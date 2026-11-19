@@ -329,6 +329,16 @@ class Bridge(QObject):
             )
         elif op == "select_variant":
             w.select_variant(d["id"], d["variant"], d.get("scene"))
+        elif op == "asset_merge_preview":
+            return w.asset_merge_preview(d["source"], d["target"])
+        elif op == "asset_operation":
+            return w.asset_operation(
+                d["source"], d["target"], d.get("mode", "variant"), d.get("choices")
+            )
+        elif op == "asset_operations":
+            return w.asset_operations()
+        elif op == "asset_operation_restore":
+            return w.asset_operation_restore(d["id"], bool(d.get("preview")))
         elif op == "asset_finish":
             w.finish_assets(d.get("selected", []), bool(d.get("confirm_pending")))
         elif op == "save_advice":
@@ -569,6 +579,17 @@ class Bridge(QObject):
 
         elif op == "image":
             return w.image(d["path"], large=True)
+        elif op == "connection_cards":
+            return w.connection_cards()
+        elif op == "connection_card_save":
+            w.save_connection_card(
+                d["profile"],
+                d.get("bindings", []),
+                d.get("key"),
+                bool(d.get("remember")),
+            )
+        elif op == "connection_delete":
+            w.delete_connection_card(d["id"], d.get("replacement", ""))
         elif op == "connection_save":
             w.save_connection(d["profile"], d.get("key"), bool(d.get("remember")))
         elif op == "node_settings":
@@ -1272,7 +1293,7 @@ class LocalPage(QWebEnginePage):
 class Desktop(QMainWindow):
     def __init__(self, root):
         super().__init__()
-        self.setWindowTitle("墨境 · 小说文本可视化 · v0.11.0-beta.1 测试版")
+        self.setWindowTitle("墨境 · 小说文本可视化 · v0.12.0-beta.1 测试版")
         self.bridge = Bridge(root, self)
         self.view = QWebEngineView(self)
         page = LocalPage(self.view)

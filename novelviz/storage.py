@@ -346,7 +346,13 @@ class Store:
 
         profile = clean_profile(profile)
         rows = self.connections(a)
-        rows = [x for x in rows if x["id"] != profile["id"]] + [profile]
+        position = next(
+            (i for i, x in enumerate(rows) if x["id"] == profile["id"]), None
+        )
+        if position is None:
+            rows.append(profile)
+        else:
+            rows[position] = profile
         write_json(self.account_dir(a) / "账户设置/connections.json", rows)
         return profile
 
@@ -773,6 +779,7 @@ class Project:
             v
             for v in asset.get("variants", [])
             if v.get("confirmed")
+            and v.get("auto_inherit", True)
             and v.get("chapter") in chapters
             and segment in chapters
             and chapters.index(v["chapter"]) <= chapters.index(segment)

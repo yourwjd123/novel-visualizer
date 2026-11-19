@@ -222,6 +222,26 @@ class TaskMixin(AssociationMixin):
                         ]
                         if not chosen:
                             raise ValueError("请选择需要建卡的条目")
+                        for item in chosen:
+                            if item.get("action") in ("reuse", "variant"):
+                                target = next(
+                                    (
+                                        a
+                                        for a in self.project.assets()
+                                        if a["id"] == item.get("target_asset_id")
+                                        and a["kind"] == item["kind"]
+                                    ),
+                                    None,
+                                )
+                                if not target:
+                                    raise ValueError("请为复用或副卡明确选择已有主卡")
+                                if (
+                                    item["action"] == "variant"
+                                    and target.get("review") == "已锁定"
+                                ):
+                                    raise ValueError(
+                                        "请先解锁主卡再建立副卡，不会调用模型"
+                                    )
                         terms = {i["name"] for i in chosen}
                         for known in self.project.assets():
                             if known["name"] in terms:
@@ -248,6 +268,7 @@ class TaskMixin(AssociationMixin):
                                     ensure_ascii=False,
                                 )
                             )
+                        context += "\n每项资产返回 request_id，值为对应勾选项的id；同名不同对象必须用该id区分。不要替用户决定合并或身份。"
                         context += "\n【用户勾选项，仅为这些对象建卡】\n" + json.dumps(
                             chosen, ensure_ascii=False
                         )
@@ -404,21 +425,41 @@ class TaskMixin(AssociationMixin):
                 for v in advice.get("items", [])
                 if v["id"] in (job.get("selected") or [])
             ]
+            handled_requests = set()
             for row in parsed["assets"]:
                 try:
-                    if selected_items and not any(
-                        v["name"] == row.get("name") and v["kind"] == row.get("kind")
-                        for v in selected_items
+                    for internal in (
+                        "source_request_id",
+                        "target_asset_id",
+                        "identity_action",
                     ):
-                        raise ValueError("模型输出了未勾选资产")
+                        row.pop(internal, None)
+                    matches = [
+                        v
+                        for v in selected_items
+                        if v["name"] == row.get("name") and v["kind"] == row.get("kind")
+                    ]
                     chosen_item = next(
-                        (
-                            v
-                            for v in selected_items
-                            if v["name"] == row["name"] and v["kind"] == row["kind"]
-                        ),
+                        (v for v in selected_items if row.get("request_id") == v["id"]),
                         None,
                     )
+                    if not chosen_item and len(matches) == 1:
+                        chosen_item = matches[0]
+                    if chosen_item and (
+                        chosen_item["name"] != row.get("name")
+                        or chosen_item["kind"] != row.get("kind")
+                    ):
+                        raise ValueError("request_id与资产名称/类别不一致")
+                    if selected_items and not chosen_item:
+                        raise ValueError(
+                            "输出未对应勾选项；同名对象需返回 request_id，请分项核对"
+                        )
+                    if chosen_item and chosen_item["id"] in handled_requests:
+                        raise ValueError("同一建卡项重复输出，仅保留首个有效结果")
+                    if chosen_item:
+                        row["source_request_id"] = chosen_item["id"]
+                        row["target_asset_id"] = chosen_item.get("target_asset_id", "")
+                        row["identity_action"] = chosen_item.get("action", "auto")
                     if chosen_item:
                         row["priority"] = chosen_item["priority"]
                     if isinstance(row.get("evidence"), dict):
@@ -469,6 +510,8 @@ class TaskMixin(AssociationMixin):
                     ):
                         raise ValueError("首次出现段落越界")
                     rows.append(row)
+                    if chosen_item:
+                        handled_requests.add(chosen_item["id"])
                 except (ValueError, AttributeError, TypeError, KeyError) as e:
                     failures.append(str(e))
             job["failed_assets"] = failures
@@ -557,6 +600,9 @@ class TaskMixin(AssociationMixin):
                             v
                             for v in candidates
                             if v.get("job") == job["id"]
+                            and v.get("source_request_id")
+                            == row.get("source_request_id")
+                            and v["kind"] == row["kind"]
                             and v["name"] == row["name"]
                             and not v.get("accepted")
                         ),
@@ -573,7 +619,7 @@ class TaskMixin(AssociationMixin):
                             (
                                 i
                                 for i in selected_items
-                                if i["name"] == row["name"] and i["kind"] == row["kind"]
+                                if i["id"] == row.get("source_request_id")
                             ),
                             {},
                         )
@@ -595,8 +641,7 @@ class TaskMixin(AssociationMixin):
                         self.project.save_asset(asset)
                     for item in selected_items:
                         if (
-                            item["name"] == row["name"]
-                            and item["kind"] == row["kind"]
+                            item["id"] == row.get("source_request_id")
                             and item["id"] not in created
                         ):
                             created.append(item["id"])
@@ -643,6 +688,8 @@ class TaskMixin(AssociationMixin):
                 "source",
                 "first_paragraph",
                 "appearances",
+                "target_asset_id",
+                "identity_action",
             ):
                 if key in (data or {}):
                     patched[key] = copy.deepcopy(data[key])
@@ -674,14 +721,40 @@ class TaskMixin(AssociationMixin):
                     ]
                 ):
                     raise ValueError("候选证据无法定位")
-            existing = next(
-                (
-                    r
-                    for r in self.project.assets()
-                    if r["name"] == row["name"] and r["kind"] == row["kind"]
-                ),
-                None,
+            action_kind = (data or {}).get(
+                "identity_action", row.get("identity_action", "auto")
             )
+            target = (data or {}).get("target_asset_id", row.get("target_asset_id", ""))
+            known = self.project.assets()
+            existing = (
+                next(
+                    (
+                        a
+                        for a in known
+                        if a["id"] == target and a["kind"] == row["kind"]
+                    ),
+                    None,
+                )
+                if target
+                else None
+            )
+            if target and not existing:
+                raise ValueError("指定的已有资产不存在或类型不匹配")
+            if action_kind == "new":
+                existing = None
+            elif not existing:
+                exact = [
+                    a
+                    for a in known
+                    if a["kind"] == row["kind"] and a["name"] == row["name"]
+                ]
+                if len(exact) > 1:
+                    raise ValueError(
+                        "存在多个同名资产，请指定复用目标或选择新建独立资产"
+                    )
+                existing = exact[0] if exact else None
+            if action_kind in ("reuse", "variant") and not existing:
+                raise ValueError("请指定要复用或建立副卡的主卡")
             record = (
                 copy.deepcopy(existing)
                 if existing
@@ -871,7 +944,14 @@ class TaskMixin(AssociationMixin):
             if i["id"] in done
             and all(
                 i.get(k) == previous.get(i["id"], {}).get(k)
-                for k in ("name", "kind", "priority", "action", "variant_title")
+                for k in (
+                    "name",
+                    "kind",
+                    "priority",
+                    "action",
+                    "variant_title",
+                    "target_asset_id",
+                )
             )
         ]
         self.project.config.setdefault("asset_advice", {})[self.segment] = dict(
@@ -893,6 +973,8 @@ class TaskMixin(AssociationMixin):
         )
         if not asset:
             raise ValueError("资产不存在")
+        if restore and asset.get("operation_target"):
+            raise ValueError("请通过资产操作记录恢复此卡，以同步副卡和关联")
         asset["archived"] = not restore
         self.project.save_asset(asset)
         # Keep links to missing archives so scenes can show missing assets explicitly.
@@ -969,6 +1051,8 @@ class TaskMixin(AssociationMixin):
         self.require_project()
         self.guard()
         asset = next(a for a in self.project.assets() if a["id"] == identity)
+        if asset.get("review") == "已锁定":
+            raise ValueError("请先解锁主卡再编辑副卡")
         if not title.strip():
             raise ValueError("副卡名称不能为空")
         if image and not self.file(image).is_file():
@@ -982,6 +1066,10 @@ class TaskMixin(AssociationMixin):
             title=title,
             chapter=(old or {}).get("chapter", self.segment),
             confirmed=True,
+            auto_inherit=(old or {}).get("auto_inherit", True),
+            origin_asset=(old or {}).get("origin_asset", ""),
+            operation_id=(old or {}).get("operation_id", ""),
+            images=copy.deepcopy((old or {}).get("images", [])),
             image=image,
             revision=(old or {}).get("revision", 0) + 1,
             updated=now(),

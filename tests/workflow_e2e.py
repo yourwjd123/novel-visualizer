@@ -53,10 +53,12 @@ def main():
                 c.wait("document.querySelector('.assets-workspace')")
                 c.click("设置", ".system-sidebar button")
                 c.click("生图模型配置", ".settings-tabs button")
-                c.wait("document.querySelector('.workflow-presets')")
+                c.wait("document.querySelector('.connections-hub')")
                 c.evaluate(
-                    "[...document.querySelectorAll('.provider-card')].find(e=>e.innerText.includes('测试云端')).querySelectorAll('button')[2].click()"
+                    "[...document.querySelectorAll('.connection-card')].find(e=>e.innerText.includes('测试云端')).querySelector('.actions button').click()"
                 )
+                c.wait("document.querySelector('.workflow-presets')")
+                c.click("添加工作流", ".provider-card button")
                 c.wait("document.querySelector('[aria-label=\"工作流预设编辑\"]')")
                 text = json.dumps(json.dumps(graph(4)), ensure_ascii=False)
                 c.evaluate(
@@ -77,6 +79,9 @@ def main():
                     "document.querySelector('.preset-row')?.innerText.includes('四图测试')"
                 )
                 c.screenshot(out / "workflow-presets.png")
+                c.evaluate(
+                    "document.querySelector('[aria-label=\"关闭预设列表\"]').click()"
+                )
                 c.click("场景插图", ".workspace-tabs button")
                 c.wait("document.querySelector('.render-editor textarea')")
                 c.fill(".render-editor textarea", "沈青提灯站在雨夜渡口，摆渡人在旁。")

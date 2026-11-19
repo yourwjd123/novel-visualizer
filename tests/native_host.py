@@ -156,6 +156,30 @@ if os.environ.get("NOVELVIZ_GALLERY_E2E") == "1":
         extra = store.create_project(store.accounts[0], name)
         extra.close()
     fixture.close()
+if os.environ.get("NOVELVIZ_ASSET_HUB_E2E") == "1":
+    from novelviz.workspace import Workspace
+
+    fixture = Workspace(sys.argv[1])
+    fixture.login(store.accounts[0]["id"])
+    root = fixture.project.path
+    source = root / next(a["image"] for a in fixture.project.assets() if a.get("image"))
+    a = fixture.save_asset(
+        dict(name="受伤旅人", kind="人物", description="左臂绷带", review="已确认")
+    )
+    b = fixture.save_asset(
+        dict(name="旅人", kind="人物", description="主卡外观", review="已确认")
+    )
+    fixture.add_reference(a["id"], source)
+    fixture.add_reference(b["id"], source)
+    scenes = fixture.project.scenes(fixture.segment)
+    fixture.project.set_requirements(
+        scenes[-1]["id"], [dict(name=a["name"], kind="人物", asset_id=a["id"])]
+    )
+    fixture.set_selection(scene=scenes[0]["id"])
+    for _ in range(2):
+        fixture.import_scene_image(source)
+        fixture.choose_results([fixture.project.jobs()[0]["results"][0]])
+    fixture.close()
 window = Desktop(sys.argv[1])
 window.resize(1440, 1000)
 window.show()

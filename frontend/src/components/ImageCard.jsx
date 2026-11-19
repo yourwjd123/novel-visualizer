@@ -23,6 +23,7 @@ export default function ImageCard({
         {image && !failed ? (
           <img
             src={image}
+            draggable={false}
             alt={title}
             loading="lazy"
             onError={() => setFailed(true)}

@@ -1988,3 +1988,436 @@ def test_old_single_result_keeps_identity_and_recovers_candidate_source(work, tm
     )
     work.choose_results([path])
     assert len(work.project.final_results()) == 1
+
+
+def test_connection_card_edits_bindings_and_delete_never_falls_back(work, monkeypatch):
+    profile = dict(
+        id="card-lang",
+        name="语言连接",
+        kind="openai",
+        endpoint="http://localhost:9999/v1",
+        model="first",
+    )
+    work.save_connection_card(profile, ["default_text", "text:1"], key="session-only")
+    assert (
+        work.parameters(1)["model"] == "first"
+        and work.key("card-lang") == "session-only"
+    )
+    work.save_connection_card(
+        dict(profile, model="updated"), ["default_text", "text:1"]
+    )
+    assert (
+        work.parameters(1)["model"] == "updated"
+        and work.key("card-lang") == "session-only"
+    )
+    work.delete_connection_card("card-lang")
+    assert not any(c["id"] == "card-lang" for c in work.store.connections(work.account))
+    assert work.key("card-lang") == ""
+    with pytest.raises(ValueError, match="语言模型连接"):
+        work.parameters(1)
+    with pytest.raises(ValueError, match="语言模型连接"):
+        work.parameters(0)
+
+
+def test_connection_delete_keeps_workflow_inactive_and_replaces_only_explicit_choice(
+    work,
+):
+    from test_workflows import graph
+    from novelviz.workflows import inspect_flow
+
+    for identity in ("cloud-a", "cloud-b"):
+        work.save_connection_card(
+            dict(
+                id=identity,
+                name=identity,
+                kind="comfy",
+                endpoint="http://localhost:8188",
+            ),
+            ["default_image"] if identity == "cloud-a" else [],
+        )
+    f = graph(1)
+    work.save_workflow_preset(
+        dict(
+            id="preset-a",
+            name="单图",
+            connection_id="cloud-a",
+            reference_count=1,
+            workflow=f,
+            mapping=inspect_flow(f)["mapping"],
+        )
+    )
+    work.delete_connection_card("cloud-a", "cloud-b")
+    config = work.store.image_defaults(work.account)
+    assert config["connection_id"] == "cloud-b"
+    assert (
+        config["presets"][0]["connection_id"] == "" and config["presets"][0]["workflow"]
+    )
+
+
+def test_asset_group_and_restore_preserve_edits_links_and_no_auto_adoption(
+    work, tmp_path
+):
+    a = work.save_asset(
+        dict(name="受伤的甲", kind="人物", description="左臂受伤", review="已确认")
+    )
+    b = work.save_asset(
+        dict(name="甲", kind="人物", description="主卡", review="已确认")
+    )
+    work.add_reference(a["id"], picture(tmp_path / "injured.png"))
+    work.confirm_split(rows())
+    scene = work.scene
+    work.project.set_requirements(
+        scene, [dict(name=a["name"], kind="人物", asset_id=a["id"])]
+    )
+    op = work.asset_operation(a["id"], b["id"])
+    target = next(x for x in work.project.assets() if x["id"] == b["id"])
+    variant = target["variants"][0]
+    assert variant["operation_id"] == op["id"] and not variant["auto_inherit"]
+    assert work.project.requirements(scene)[0]["asset_id"] == b["id"]
+    assert (
+        work.project.effective_asset(target, work.segment)["selected_variant"]["id"]
+        == "base"
+    )
+    assert (
+        work.project.effective_asset(target, work.segment, scene)["selected_variant"][
+            "id"
+        ]
+        == variant["id"]
+    )
+    work.save_variant(
+        b["id"],
+        "修改后的状态",
+        dict(description="已人工补充伤口"),
+        variant["id"],
+        variant["image"],
+    )
+    assert work.asset_operation_restore(op["id"], preview=True)["scenes"] == 1
+    work.asset_operation_restore(op["id"])
+    restored = next(x for x in work.project.assets() if x["id"] == a["id"])
+    assert (
+        restored["description"] == "已人工补充伤口"
+        and restored["name"] == "修改后的状态"
+    )
+    assert (
+        work.project.requirements(scene)[0]["asset_id"] == a["id"]
+        and work.file(restored["image"]).is_file()
+    )
+    assert not next(x for x in work.project.assets() if x["id"] == b["id"])["variants"]
+
+
+def test_asset_operation_rejects_locked_nested_and_ambiguous_scene_without_mutation(
+    work,
+):
+    a = work.save_asset(dict(name="甲1", kind="人物", review="已确认"))
+    b = work.save_asset(dict(name="甲2", kind="人物", review="已确认"))
+    work.confirm_split(rows())
+    work.project.set_requirements(
+        work.scene,
+        [dict(name=x["name"], kind="人物", asset_id=x["id"]) for x in (a, b)],
+    )
+    with pytest.raises(ValueError, match="同时关联"):
+        work.asset_operation(a["id"], b["id"])
+    assert len(work.project.assets()) == 2 and not work.asset_operations()
+    work.project.set_requirements(work.scene, [])
+    work.review_assets([a["id"]], "已锁定")
+    with pytest.raises(ValueError, match="解锁"):
+        work.asset_operation(a["id"], b["id"])
+    work.review_assets([a["id"]], "已确认")
+    work.save_variant(a["id"], "旧副卡", dict(description="状态"))
+    with pytest.raises(ValueError, match="嵌套"):
+        work.asset_operation(a["id"], b["id"])
+
+
+def test_fieldwise_merge_requires_choices_and_restore_keeps_later_target_edits(work):
+    a = work.save_asset(
+        dict(
+            name="小甲",
+            kind="人物",
+            description="原卡",
+            details=dict(face="圆脸"),
+            aliases=["小名"],
+            review="已确认",
+        )
+    )
+    b = work.save_asset(
+        dict(
+            name="甲",
+            kind="人物",
+            description="目标卡",
+            details=dict(face="方脸"),
+            review="已确认",
+        )
+    )
+    preview = work.asset_merge_preview(a["id"], b["id"])
+    assert {c["field"] for c in preview["conflicts"]} == {"description", "details.face"}
+    with pytest.raises(ValueError, match="冲突"):
+        work.asset_operation(a["id"], b["id"], "merge", {})
+    op = work.asset_operation(
+        a["id"], b["id"], "merge", {"description": "target", "details.face": "source"}
+    )
+    target = next(x for x in work.project.assets() if x["id"] == b["id"])
+    assert target["details"]["face"] == "圆脸" and "小名" in target["aliases"]
+    work.save_asset(
+        dict(id=b["id"], details=dict(face="后续编辑的脸"), notes="后续笔记")
+    )
+    work.asset_operation_restore(op["id"])
+    target = next(x for x in work.project.assets() if x["id"] == b["id"])
+    assert target["details"]["face"] == "后续编辑的脸" and target["notes"] == "后续笔记"
+    assert len(work.project.assets()) == 2
+
+
+def test_same_named_candidates_require_identity_but_explicit_new_is_allowed(work):
+    first = work.save_asset(dict(name="甲", kind="人物", review="已确认"))
+    second = work.save_asset(dict(name="甲", kind="人物", review="已确认"))
+    candidate = dict(
+        id="same-name",
+        name="甲",
+        kind="人物",
+        description="另一个人",
+        source="AI 建议",
+        priority="建议",
+        priority_reason="",
+        first_paragraph=1,
+        source_hash=work.source_hash(),
+        evidence=[],
+        appearances=[],
+    )
+    work.project.config.setdefault("asset_candidates", {})[work.segment] = [candidate]
+    work.project.save_config()
+    with pytest.raises(ValueError, match="多个同名"):
+        work.candidate_action(candidate["id"], "approve")
+    work.candidate_action(candidate["id"], "approve", dict(identity_action="new"))
+    assert len(work.project.assets()) == 3 and candidate["accepted"] not in (
+        first["id"],
+        second["id"],
+    )
+
+
+def test_two_same_name_build_items_use_request_ids_and_explicit_new(work):
+    items = [
+        dict(
+            id="person-a",
+            name="甲",
+            kind="人物",
+            priority="建议",
+            reason="",
+            action="new",
+        ),
+        dict(
+            id="person-b",
+            name="甲",
+            kind="人物",
+            priority="建议",
+            reason="",
+            action="new",
+        ),
+    ]
+    work.save_advice("", items)
+    job, _, _, _ = work.prepare_text(
+        1, "建立", asset_phase="build", selected=["person-a", "person-b"]
+    )
+    rowsout = [
+        dict(
+            request_id=i["id"],
+            name="甲",
+            kind="人物",
+            description=i["id"],
+            source="AI 建议",
+            evidence=[],
+        )
+        for i in items
+    ]
+    work.process_task_output(job, json.dumps(dict(assets=rowsout)))
+    assert len(work.project.assets()) == 2
+    assert {a["description"] for a in work.project.assets()} == {"person-a", "person-b"}
+    assert set(work.project.config["assets_created"][work.segment]) == {
+        "person-a",
+        "person-b",
+    }
+
+
+def test_asset_operation_write_failure_rolls_back_business_state(work, monkeypatch):
+    a = work.save_asset(dict(name="原卡", kind="人物", review="已确认"))
+    b = work.save_asset(dict(name="主卡", kind="人物", review="已确认"))
+    work.confirm_split(rows())
+    work.project.set_requirements(
+        work.scene, [dict(name=a["name"], kind="人物", asset_id=a["id"])]
+    )
+    original = work.project.save_asset
+    calls = []
+
+    def fail_second(asset):
+        calls.append(asset["id"])
+        if len(calls) == 2:
+            raise OSError("simulated disk failure")
+        return original(asset)
+
+    monkeypatch.setattr(work.project, "save_asset", fail_second)
+    with pytest.raises(OSError):
+        work.asset_operation(a["id"], b["id"])
+    assert (
+        len(work.project.assets()) == 2
+        and work.project.requirements(work.scene)[0]["asset_id"] == a["id"]
+    )
+    assert work.asset_operations()[0]["status"] == "rolled_back"
+
+
+def test_restore_failure_remains_recoverable_and_manual_state_is_not_overwritten(
+    work, monkeypatch
+):
+    a = work.save_asset(dict(name="原卡", kind="人物", review="已确认"))
+    b = work.save_asset(dict(name="主卡", kind="人物", review="已确认"))
+    work.confirm_split(rows())
+    work.project.set_requirements(
+        work.scene, [dict(name=a["name"], kind="人物", asset_id=a["id"])]
+    )
+    op = work.asset_operation(a["id"], b["id"])
+    # A later manual choice belongs to the master and must remain there after detach.
+    work.select_variant(b["id"], "base", scene=work.scene)
+    original = work.project.save_asset
+    calls = []
+
+    def fail_second(asset):
+        calls.append(asset["id"])
+        if len(calls) == 2:
+            raise OSError("simulated restore failure")
+        return original(asset)
+
+    monkeypatch.setattr(work.project, "save_asset", fail_second)
+    with pytest.raises(OSError):
+        work.asset_operation_restore(op["id"])
+    assert (
+        len(work.project.assets()) == 1
+        and work.asset_operations()[0]["status"] == "active"
+    )
+    monkeypatch.setattr(work.project, "save_asset", original)
+    work.asset_operation_restore(op["id"])
+    assert (
+        len(work.project.assets()) == 2
+        and work.project.requirements(work.scene)[0]["asset_id"] == b["id"]
+    )
+    assert (
+        work.project.config["scene_variant_selections"][work.scene][b["id"]] == "base"
+    )
+
+
+def test_interrupted_asset_group_recovers_before_state_on_open(work):
+    from novelviz.storage import write_json
+
+    a = work.save_asset(dict(name="原卡", kind="人物", review="已确认"))
+    b = work.save_asset(dict(name="主卡", kind="人物", review="已确认"))
+    work.confirm_split(rows())
+    work.project.set_requirements(
+        work.scene, [dict(name=a["name"], kind="人物", asset_id=a["id"])]
+    )
+    scene = work.scene
+    op = work.asset_operation(a["id"], b["id"])
+    log = work.project.path / "08_项目数据/资产操作记录" / (op["id"] + ".json")
+    record = json.loads(log.read_text())
+    record["status"] = "prepared"
+    write_json(log, record)
+    root = work.project.path
+    work.close()
+    work.open_project(str(root))
+    assert (
+        len(work.project.assets()) == 2
+        and work.project.requirements(scene)[0]["asset_id"] == a["id"]
+    )
+    assert work.asset_operations()[0]["status"] == "rolled_back"
+
+
+def test_connection_cards_distinguish_persistent_and_session_credentials(
+    work, monkeypatch
+):
+    vault = {}
+    monkeypatch.setattr(
+        "novelviz.credentials.get_key", lambda slot: vault.get(slot, "")
+    )
+    monkeypatch.setattr(
+        "novelviz.credentials.set_key",
+        lambda slot, value: vault.__setitem__(slot, value),
+    )
+    profile = dict(
+        id="secure-card",
+        name="安全连接",
+        kind="openai",
+        endpoint="http://localhost:9999/v1",
+        model="local",
+    )
+    work.save_connection_card(profile, [], key="persistent-value", remember=True)
+    card = next(c for c in work.connection_cards()["cards"] if c["id"] == "secure-card")
+    assert card["key_storage"] == "system" and "persistent-value" not in json.dumps(
+        card
+    )
+    work.save_connection_card(profile, [], key="temporary-value", remember=False)
+    card = next(c for c in work.connection_cards()["cards"] if c["id"] == "secure-card")
+    assert card["key_storage"] == "session" and "temporary-value" not in json.dumps(
+        card
+    )
+
+
+def test_grouped_identity_keeps_chapter_appearance_before_plot_parsing(work):
+    a = work.save_asset(
+        dict(
+            name="甲",
+            kind="人物",
+            review="已确认",
+            appearances=[dict(segment=work.segment, paragraph=1, quote="甲走进渡口")],
+        )
+    )
+    b = work.save_asset(dict(name="主人公", kind="人物", review="已确认"))
+    op = work.asset_operation(a["id"], b["id"])
+    target = next(x for x in work.project.assets() if x["id"] == b["id"])
+    assert (
+        "甲" in target["aliases"]
+        and target["appearances"][0]["segment"] == work.segment
+    )
+    work.asset_operation_restore(op["id"])
+    target = next(x for x in work.project.assets() if x["id"] == b["id"])
+    assert "甲" not in target["aliases"] and not target["appearances"]
+
+
+def test_merge_attribute_conflicts_are_chosen_and_undo_restores_prior_value(work):
+    def attr(value):
+        return dict(name="眼睛", value=value, source="用户自定", evidence=[])
+
+    a = work.save_asset(
+        dict(name="小甲", kind="人物", review="已确认", attributes=[attr("黑色")])
+    )
+    b = work.save_asset(
+        dict(name="甲", kind="人物", review="已确认", attributes=[attr("棕色")])
+    )
+    assert any(
+        c["field"] == "attributes:眼睛"
+        for c in work.asset_merge_preview(a["id"], b["id"])["conflicts"]
+    )
+    op = work.asset_operation(a["id"], b["id"], "merge", {"attributes:眼睛": "source"})
+    target = next(x for x in work.project.assets() if x["id"] == b["id"])
+    assert target["attributes"] == [attr("黑色")]
+    work.asset_operation_restore(op["id"])
+    target = next(x for x in work.project.assets() if x["id"] == b["id"])
+    assert target["attributes"] == [attr("棕色")]
+
+
+def test_deleting_old_comfy_connection_does_not_repoint_legacy_workflow(work):
+    from test_workflows import graph
+    from novelviz.workflows import inspect_flow
+
+    for cid in ("old-cloud", "new-cloud"):
+        work.save_connection(
+            dict(id=cid, name=cid, kind="comfy", endpoint="http://localhost:8188")
+        )
+    flow = graph(0)
+    work.store.save_image_defaults(
+        work.account,
+        dict(
+            connection_id="old-cloud",
+            workflow=json.dumps(flow),
+            mapping=json.dumps(inspect_flow(flow)["mapping"]),
+        ),
+    )
+    work.delete_connection_card("old-cloud", "new-cloud")
+    config = work.store.image_defaults(work.account)
+    assert config["connection_id"] == "new-cloud" and "workflow" not in config
+    assert config["presets"][0]["connection_id"] == ""
+    assert not any(p["connection_id"] == "new-cloud" for p in work.workflow_presets())

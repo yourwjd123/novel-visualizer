@@ -278,6 +278,7 @@ export default function ReadingPage() {
     [preview, setPreview] = useState(null),
     [largeImage, setLargeImage] = useState(""),
     [imageError, setImageError] = useState(false),
+    [failedThumbs, setFailedThumbs] = useState(new Set()),
     [pagination, setPagination] = useState({ page: 0, total: 1 }),
     [ready, setReady] = useState(false);
   const stage = useRef(null),
@@ -653,15 +654,60 @@ export default function ReadingPage() {
       onIndexChange: (index) => setPreview((v) => (v ? { ...v, index } : v)),
     });
   }
+  useEffect(() => {
+    setPreview((previous) => {
+      if (!previous) return previous;
+      const groups =
+        previous.mediaKind === "scene" ? media.scenes : media.assets;
+      const group = groups?.find((g) => g.id === previous.id);
+      if (!group) return null;
+      const images = group.images.filter(
+        (im) =>
+          im.thumbnail &&
+          !failedThumbs.has(im.thumbnail) &&
+          (previous.mediaKind !== "scene" || im.state === "成果"),
+      );
+      if (!images.length) return null;
+      const index = Math.max(
+        0,
+        images.findIndex(
+          (im) => im.path === previous.images[previous.index]?.path,
+        ),
+      );
+      if (
+        images.length === previous.images.length &&
+        images.every(
+          (im, i) =>
+            im.path === previous.images[i].path &&
+            im.thumbnail === previous.images[i].thumbnail,
+        )
+      )
+        return previous;
+      return { ...previous, images, index };
+    });
+  }, [media, failedThumbs]);
   const active = data?.chapters.find((c) => c.id === chapter);
   const position = data?.position;
-  const scenes = (media.scenes || [])
+  const usable = (groups) =>
+    groups
+      .map((group) => ({
+        ...group,
+        images: group.images.filter(
+          (im) => im.thumbnail && !failedThumbs.has(im.thumbnail),
+        ),
+      }))
+      .filter((group) => group.images.length);
+  const scenes = usable(media.scenes || [])
     .map((group) => ({
       ...group,
-      images: group.images.filter((im) => im.state === "成果" && im.thumbnail),
+      images: group.images.filter((im) => im.state === "成果"),
     }))
     .filter((group) => group.images.length);
-  const assets = media.assets || [];
+  const assets = usable(media.assets || []);
+  function brokenThumbnail(thumb) {
+    setFailedThumbs((v) => new Set([...v, thumb]));
+    notify("图片加载失败，已隐藏失效入口；原文件不会删除");
+  }
   if (!data) return <p className="reader-loading">正在打开小说…</p>;
   return (
     <section
@@ -964,6 +1010,34 @@ export default function ReadingPage() {
             <PanelRightClose size={20} />
           )}
         </button>
+        {!!scenes.length && (
+          <aside
+            className={
+              "reader-scene-rail " + (prefs.images_collapsed ? "collapsed" : "")
+            }
+            aria-label="当前阅读场景成果"
+            aria-hidden={prefs.images_collapsed}
+            inert={prefs.images_collapsed ? true : undefined}
+          >
+            {scenes.map((group) => (
+              <button
+                className="reader-thumb landscape"
+                key={group.id}
+                title={group.name + " · 场景图"}
+                aria-label={"预览场景 " + group.name}
+                onClick={() =>
+                  setPreview({ ...group, index: 0, mediaKind: "scene" })
+                }
+              >
+                <img
+                  src={group.images[0].thumbnail}
+                  alt={group.name}
+                  onError={() => brokenThumbnail(group.images[0].thumbnail)}
+                />
+              </button>
+            ))}
+          </aside>
+        )}
         <aside
           className={
             "reader-image-rail " + (prefs.images_collapsed ? "collapsed" : "")
@@ -972,39 +1046,21 @@ export default function ReadingPage() {
           aria-hidden={prefs.images_collapsed}
           inert={prefs.images_collapsed ? true : undefined}
         >
-          {!!assets.length && (
-            <div className="rail-category" title="资产图">
-              <UserRound size={17} />
-            </div>
-          )}
           {assets.map((group) => (
             <button
               className="reader-thumb"
               key={group.id}
               title={group.name + " · 资产图"}
               aria-label={"预览资产 " + group.name}
-              onClick={() => setPreview({ ...group, index: 0 })}
+              onClick={() =>
+                setPreview({ ...group, index: 0, mediaKind: "asset" })
+              }
             >
               <img
                 src={group.images.find((i) => i.thumbnail)?.thumbnail}
                 alt={group.name}
+                onError={() => brokenThumbnail(group.images[0].thumbnail)}
               />
-            </button>
-          ))}
-          {!!scenes.length && (
-            <div className="rail-category" title="场景成果">
-              <Images size={17} />
-            </div>
-          )}
-          {scenes.map((group) => (
-            <button
-              className="reader-thumb landscape"
-              key={group.id}
-              title={group.name + " · 场景图"}
-              aria-label={"预览场景 " + group.name}
-              onClick={() => setPreview({ ...group, index: 0 })}
-            >
-              <img src={group.images[0].thumbnail} alt={group.name} />
             </button>
           ))}
           {!assets.length && !scenes.length && (
@@ -1015,13 +1071,19 @@ export default function ReadingPage() {
         </aside>
         {preview && (
           <aside
-            className="reader-image-preview"
+            className={
+              "reader-image-preview " +
+              (preview.mediaKind === "scene" ? "scene-preview" : "")
+            }
             role="dialog"
             aria-label="阅读图片预览"
           >
             <header>
               <strong>
-                {preview.name} · {preview.images[preview.index].title}
+                {preview.name}
+                {preview.images[preview.index].title !== preview.name
+                  ? " · " + preview.images[preview.index].title
+                  : ""}
               </strong>
               <button
                 className="icon quiet"

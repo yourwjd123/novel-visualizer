@@ -10,6 +10,8 @@ import {
 } from "lucide-react";
 import { useWorkspace, copy } from "./context";
 import { PageHeading, Empty, DropZone } from "./App";
+import AssetOperations from "./AssetOperations";
+import AssetLibraryCard from "./AssetLibraryCard";
 import ImageCard from "./components/ImageCard";
 import { api } from "./api";
 
@@ -26,6 +28,20 @@ export default function AssetsPage() {
     setModal,
     uploadFiles,
   } = useWorkspace();
+  const [assetOperation, setAssetOperation] = useState(null),
+    [lastOperation, setLastOperation] = useState(null),
+    [dragging, setDragging] = useState(null);
+  async function dropAsset(target) {
+    const source = dragging;
+    setDragging(null);
+    if (!source) return;
+    const result = await run("asset_operation", {
+      source: source.id,
+      target: target.id,
+      mode: "variant",
+    });
+    if (result) setLastOperation(result);
+  }
   const [filter, setFilter] = useState("全部"),
     [search, setSearch] = useState(""),
     [view, setView] = useState("records"),
@@ -57,7 +73,19 @@ export default function AssetsPage() {
     [adviceItems, setAdviceItems] = useState([]),
     [adviceRaw, setAdviceRaw] = useState("");
   useEffect(() => {
-    setAdviceItems(s.asset_advice?.items || []);
+    setAdviceItems(
+      (s.asset_advice?.items || []).map((item) => {
+        if (item.action) return item;
+        const exact = s.assets.filter(
+          (a) => a.name === item.name && a.kind === item.kind,
+        );
+        return exact.length === 1
+          ? { ...item, action: "reuse", target_asset_id: exact[0].id }
+          : exact.length > 1
+            ? { ...item, action: "reuse", target_asset_id: "" }
+            : { ...item, action: "new" };
+      }),
+    );
     setAdviceRaw(s.asset_advice?.raw || "");
     setAdviceSelection(
       (old) =>
@@ -115,6 +143,41 @@ export default function AssetsPage() {
   );
   return (
     <div className="assets-workspace">
+      {assetOperation && (
+        <AssetOperations
+          request={assetOperation}
+          onClose={() => setAssetOperation(null)}
+          onDone={(result) => {
+            setLastOperation(result);
+            notify(result.message);
+          }}
+        />
+      )}
+      {lastOperation && (
+        <div className="operation-notice" role="status">
+          {lastOperation.message}
+          {lastOperation.id && (
+            <button
+              onClick={() =>
+                setAssetOperation({
+                  mode: "history",
+                  restore: lastOperation.id,
+                })
+              }
+            >
+              撤销 / 恢复
+            </button>
+          )}
+          <button
+            className="icon"
+            aria-label="关闭操作提示"
+            onClick={() => setLastOperation(null)}
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       <PageHeading
         title="视觉资产库"
 
@@ -329,8 +392,44 @@ export default function AssetsPage() {
                     }
                   >
                     <option value="auto">新建或关联已有档案</option>
-                    <option value="variant">建立本章状态副卡</option>
+                    <option value="reuse">复用已有资产</option>
+                    <option value="variant">为已有资产建立副卡</option>
+                    <option value="new">新建独立资产（允许同名）</option>
                   </select>
+                  {["reuse", "variant"].includes(item.action) && (
+                    <select
+                      aria-label={"建议复用目标 " + item.id}
+                      value={item.target_asset_id || ""}
+                      onChange={(e) =>
+                        setAdviceItems((v) =>
+                          v.map((a, j) =>
+                            j === i
+                              ? { ...a, target_asset_id: e.target.value }
+                              : a,
+                          ),
+                        )
+                      }
+                    >
+                      <option value="">请选择已有主卡</option>
+                      {s.assets
+                        .filter((a) => a.kind === item.kind)
+                        .map((a) => (
+                          <option key={a.id} value={a.id}>
+                            {a.name} · {a.id.slice(-6)}
+                          </option>
+                        ))}
+                    </select>
+                  )}
+                  {s.assets.some(
+                    (a) =>
+                      a.kind === item.kind &&
+                      (a.name === item.name ||
+                        (a.aliases || []).includes(item.name)),
+                  ) && (
+                    <small className="muted">
+                      已有相近档案，请核对复用目标或明确选择新建独立资产。
+                    </small>
+                  )}
                   {item.action === "variant" && (
                     <input
                       aria-label="副卡标题"
@@ -382,6 +481,12 @@ export default function AssetsPage() {
                 <button
                   disabled={
                     s.busy ||
+                    adviceItems.some(
+                      (i) =>
+                        adviceSelection.has(i.id) &&
+                        ["reuse", "variant"].includes(i.action) &&
+                        !i.target_asset_id,
+                    ) ||
                     ![...adviceSelection].some(
                       (id) => !(s.assets_created || []).includes(id),
                     )
@@ -432,6 +537,9 @@ export default function AssetsPage() {
       <details className="asset-more toolbar-menu">
         <summary aria-label="资产库更多选项">⋯</summary>
         <div>
+          <button onClick={() => setAssetOperation({ mode: "history" })}>
+            资产操作记录 / 恢复
+          </button>
           <button
             onClick={() => {
               setView("trash");
@@ -603,6 +711,43 @@ export default function AssetsPage() {
                           </button>
                         </div>
                       )}
+                      <select
+                        aria-label={"候选身份 " + a.id}
+                        value={
+                          a.identity_action === "new"
+                            ? "new"
+                            : a.target_asset_id || "auto"
+                        }
+                        onChange={(e) =>
+                          run("asset_candidate", {
+                            id: a.id,
+                            action: "edit",
+                            data: {
+                              identity_action:
+                                e.target.value === "new"
+                                  ? "new"
+                                  : e.target.value === "auto"
+                                    ? "auto"
+                                    : "reuse",
+                              target_asset_id: ["auto", "new"].includes(
+                                e.target.value,
+                              )
+                                ? ""
+                                : e.target.value,
+                            },
+                          })
+                        }
+                      >
+                        <option value="auto">按唯一同名匹配</option>
+                        <option value="new">新建独立资产</option>
+                        {s.assets
+                          .filter((v) => v.kind === a.kind)
+                          .map((v) => (
+                            <option key={v.id} value={v.id}>
+                              复用：{v.name} · {v.id.slice(-6)}
+                            </option>
+                          ))}
+                      </select>
                       <footer>
                         <button
                           onClick={() =>
@@ -677,9 +822,11 @@ export default function AssetsPage() {
           </div>
           <div className="asset-grid">
             {rows.map((a) => (
-              <ImageCard
+              <AssetLibraryCard
                 key={a.id}
-                image={a.thumbnail}
+                asset={a}
+                priority={level(a)}
+                firstAppearance={order(a)}
                 selected={selected.has(a.id)}
                 onSelect={() =>
                   setSelected((v) => {
@@ -688,85 +835,15 @@ export default function AssetsPage() {
                     return n;
                   })
                 }
-                title={a.name}
-                subtitle={a.description?.slice(0, 80) || "视觉设定待填写"}
-                badge={a.image ? "主参考图" : "待补参考图"}
-                onOpen={() => setAssetEdit(a)}
-              >
-                <div className="card-meta">
-                  <span className="badge">
-                    {a.kind} · {level(a)}
-                  </span>
-                  <span className="small muted">
-                    {Number.isFinite(order(a))
-                      ? "首现段落 " + order(a)
-                      : "出现位置待核对"}
-                  </span>
-                  <select
-                    className="asset-status"
-                    aria-label={"资产状态 " + a.name}
-                    title="已确认表示已审核；已锁定会冻结内容，需先解锁才能编辑。"
-                    value={a.review || "待确认"}
-                    disabled={s.busy}
-                    onChange={(e) =>
-                      run("asset_review", {
-                        ids: [a.id],
-                        status: e.target.value,
-                      })
-                    }
-                  >
-                    <option value="待确认">待确认</option>
-                    <option value="已确认">已确认</option>
-                    <option value="已锁定">已锁定</option>
-                  </select>
-                  <button onClick={() => openAssetRender(a.id)}>
-                    制作资产图
-                  </button>
-                </div>
-                <label>
-                  本章采用
-                  <select
-                    aria-label={"副卡选择 " + a.name}
-                    value={s.chapter_variant_choices?.[a.id] || "auto"}
-                    onChange={(e) =>
-                      run("select_variant", {
-                        id: a.id,
-                        variant: e.target.value,
-                      })
-                    }
-                  >
-                    <option value="auto">自动继承此前最新确认副卡</option>
-                    <option value="base">主卡</option>
-                    {(a.variants || []).map((v) => (
-                      <option key={v.id} value={v.id}>
-                        {v.title}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <p className="small muted">
-                  当前有效：{a.effective?.selected_variant?.title || "主卡"}
-                </p>
-                <footer>
-                  <span>关联 {new Set(a.uses).size} 个情节</span>
-                  <button
-                    disabled={s.busy}
-                    onClick={() => {
-                      if (
-                        window.confirm(
-                          "删除资产档案到回收站？原文、图片与历史保留，相关情节将显示缺失。",
-                        )
-                      )
-                        run("archive_asset", { id: a.id });
-                    }}
-                  >
-                    删除
-                  </button>
-                  <button className="quiet" onClick={() => setAssetEdit(a)}>
-                    编辑档案 ↗
-                  </button>
-                </footer>
-              </ImageCard>
+                dragging={dragging}
+                onDragStart={setDragging}
+                onDragEnd={() => setDragging(null)}
+                onDrop={dropAsset}
+                onOperation={setAssetOperation}
+                onRestore={(id) =>
+                  setAssetOperation({ mode: "history", restore: id })
+                }
+              />
             ))}
           </div>
           {!rows.length && (

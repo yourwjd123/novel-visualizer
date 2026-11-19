@@ -13,6 +13,8 @@ import json
 import shutil
 from pathlib import Path
 
+from .asset_operations import AssetOperationsMixin
+from .connection_management import ConnectionManagementMixin
 from .books import BooksMixin
 from .generation import GenerationMixin
 from .reading import ReadingMixin
@@ -34,6 +36,8 @@ from .storage import DEFAULTS, NODES, Project, Store, now, redact, safe_name, ui
 
 
 class Workspace(
+    AssetOperationsMixin,
+    ConnectionManagementMixin,
     BooksMixin,
     GenerationMixin,
     ReadingMixin,
@@ -133,6 +137,7 @@ class Workspace(
             for seg in candidate.segments():
                 candidate.ensure_scene(seg["id"])
         self.project.secrets = self.secrets()
+        self.recover_asset_operations()
         self.upgrade_result_sources()
         segments = self.project.segments()
         self.segment = segments[0]["id"] if segments else None
@@ -951,6 +956,8 @@ class Workspace(
                 credentials.set_key(credential_id(self.account["id"], p["id"]), key)
             self.keys[self.account["id"] + ":" + p["id"]] = key
         self.store.save_connection(self.account, p)
+        if self.project:
+            self.project.secrets = self.secrets()
 
     def prepare_text(self, node, message, asset=None, attachments=(), **options):
         return self.prepare_single(node, message, asset, attachments, **options)

@@ -3,7 +3,9 @@ import { Plus, X, Save, RotateCcw } from "lucide-react";
 import { useWorkspace, copy, freshId } from "./context";
 import { PageHeading } from "./App";
 import { BookTrash } from "./BookManagement";
+import ConnectionsPanel from "./ConnectionsPanel";
 import WorkflowPresets from "./WorkflowPresets";
+import ConnectionEditor from "./ConnectionEditor";
 import PromptManager from "./PromptManager";
 import { api } from "./api";
 
@@ -11,6 +13,12 @@ export default function SettingsPage() {
   const { s, run, refresh, notify, dirty } = useWorkspace();
   const [promptManager, setPromptManager] = useState(false);
   const [customKind, setCustomKind] = useState("language");
+  useEffect(() => {
+    setShared((v) => ({
+      ...v,
+      language_connection_id: s.settings.language_connection_id,
+    }));
+  }, [s.settings.language_connection_id]);
   const [shared, setShared] = useState({ ...s.settings });
   const [section, setSection] = useState("language"),
     [node, setNode] = useState(0),
@@ -234,49 +242,7 @@ export default function SettingsPage() {
             所有文本节点默认使用此连接；API
             与本地兼容服务均可。各节点的任务提示词保持独立。
           </p>
-          <label>
-            默认连接
-            <select
-              value={shared.language_connection_id || ""}
-              onChange={(e) => {
-                setShared({
-                  ...shared,
-                  language_connection_id: e.target.value,
-                });
-                dirty.current = true;
-              }}
-            >
-              <option value="">尚未选择（保留旧版节点配置）</option>
-              {connections.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="actions">
-            <button
-              onClick={() => setEditor(connection)}
-              disabled={!connection}
-            >
-              编辑连接 / 密钥
-            </button>
-            <button
-              onClick={() =>
-                setEditor({
-                  id: "conn-" + freshId(),
-                  name: "默认语言模型",
-                  kind: "openai",
-                  endpoint: "http://127.0.0.1:11434/v1",
-                  model: "",
-                  max_tokens: 10000,
-                  temperature: 0.5,
-                })
-              }
-            >
-              新建语言连接
-            </button>
-          </div>
+          <ConnectionsPanel category="language" />
           <div className="field-pair">
             <label>
               默认最大输出 token
@@ -681,42 +647,51 @@ export default function SettingsPage() {
                 </label>
               </>
             )}
-            <div className="connection-row">
-              <label>
-                {section === "image" ? "默认图片连接" : "独立图片连接"}
-                <select
-                  value={image.connection_id || "image-default"}
-                  onChange={(e) =>
-                    setImageField("connection_id", e.target.value)
-                  }
-                >
-                  {connections.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button onClick={() => setEditor(connection || connections[0])}>
-                编辑配置 / 密钥
-              </button>
-              <button
-                onClick={() =>
-                  setEditor({
-                    id: "image-" + freshId(),
-                    name: "独立图片连接",
-                    kind: "comfy",
-                    endpoint: "http://127.0.0.1:8188",
-                    model: "",
-                    vision: false,
-                    max_tokens: 4096,
-                    temperature: 0.5,
-                  })
-                }
-              >
-                新建图片连接
-              </button>
-            </div>
+            {section === "image" ? (
+              <ConnectionsPanel category="image" />
+            ) : (
+              <>
+                {" "}
+                <div className="connection-row">
+                  <label>
+                    {section === "image" ? "默认图片连接" : "独立图片连接"}
+                    <select
+                      value={image.connection_id || "image-default"}
+                      onChange={(e) =>
+                        setImageField("connection_id", e.target.value)
+                      }
+                    >
+                      {connections.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    onClick={() => setEditor(connection || connections[0])}
+                  >
+                    编辑配置 / 密钥
+                  </button>
+                  <button
+                    onClick={() =>
+                      setEditor({
+                        id: "image-" + freshId(),
+                        name: "独立图片连接",
+                        kind: "comfy",
+                        endpoint: "http://127.0.0.1:8188",
+                        model: "",
+                        vision: false,
+                        max_tokens: 4096,
+                        temperature: 0.5,
+                      })
+                    }
+                  >
+                    新建图片连接
+                  </button>
+                </div>
+              </>
+            )}
             <p className="muted small">
               图片任务不借用语言模型密钥。兼容图片 API
               当前仅文生图；参考图输入请使用已映射的 ComfyUI 工作流。
@@ -746,12 +721,14 @@ export default function SettingsPage() {
                 />
               </label>
             </div>
-            <WorkflowPresets
-              connection={connection}
-              image={image}
-              setImageField={setImageField}
-              onEditConnection={setEditor}
-            />
+            {section === "custom" && (
+              <WorkflowPresets
+                connection={connection}
+                image={image}
+                setImageField={setImageField}
+                onEditConnection={setEditor}
+              />
+            )}
             <details className="legacy-workflow">
               <summary>旧版工作流与手动映射（兼容保留）</summary>
               <label>
@@ -957,7 +934,7 @@ export default function SettingsPage() {
           <div className="separated">
             <h2>测试版本与许可</h2>
             <p className="muted small prose">
-              v0.11.0-beta.1 · GPL-3.0。UI 标签交互与纸墨基础参考
+              v0.12.0-beta.1 · GPL-3.0。UI 标签交互与纸墨基础参考
               Pagekin；视觉资产卡参考 Story Asset
               Studio（MIT）。对应版权和完整许可随源码提供。此应用只做已有文本可视化，不提供小说创作功能。
             </p>
@@ -981,156 +958,5 @@ export default function SettingsPage() {
         />
       )}
     </>
-  );
-}
-
-function ConnectionEditor({ profile, imageOnly, onClose, onSaved }) {
-  const { run, notify } = useWorkspace();
-  const [p, setP] = useState(copy(profile)),
-    [key, setKey] = useState(""),
-    [remember, setRemember] = useState(false),
-    [clear, setClear] = useState(false);
-  const set = (k, v) => setP((p) => ({ ...p, [k]: v }));
-  return (
-    <div className="modal-shade">
-      <section
-        className="modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label="连接与密钥"
-      >
-        <div className="modal-heading">
-          <h2>连接与密钥</h2>
-          <button
-            className="icon quiet"
-            aria-label="关闭连接设置"
-            onClick={onClose}
-          >
-            <X size={18} />
-          </button>
-        </div>
-        {!imageOnly && (
-          <label className="check-row">
-            <input
-              type="checkbox"
-              checked={!!p.structured_output}
-              onChange={(e) => set("structured_output", e.target.checked)}
-            />
-            此服务明确支持 JSON 对象输出模式（不支持时请勿启用）
-          </label>
-        )}
-        <label>
-          配置名称
-          <input value={p.name} onChange={(e) => set("name", e.target.value)} />
-        </label>
-        <label>
-          类型
-          <select value={p.kind} onChange={(e) => set("kind", e.target.value)}>
-            {imageOnly ? (
-              <>
-                <option value="comfy">本地 / 远端 ComfyUI</option>
-                <option value="image_api">图片 · OpenAI 兼容 API</option>
-              </>
-            ) : (
-              <>
-                <option value="demo">演示（不联网）</option>
-                <option value="openai">文本 / 视觉 · OpenAI 兼容</option>
-              </>
-            )}
-          </select>
-        </label>
-        {p.kind !== "demo" && (
-          <>
-            <label>
-              服务地址
-              <input
-                value={p.endpoint || ""}
-                onChange={(e) => set("endpoint", e.target.value)}
-                placeholder="http://127.0.0.1:11434/v1"
-              />
-            </label>
-            <label>
-              模型标识
-              <input
-                value={p.model || ""}
-                onChange={(e) => set("model", e.target.value)}
-              />
-            </label>
-            <label>
-              API 密钥（留空保留既有凭据）
-              <input
-                type="password"
-                autoComplete="off"
-                value={key}
-                onChange={(e) => setKey(e.target.value)}
-                placeholder={
-                  profile.key_set ? "已设置，不回显" : "本地无鉴权服务可留空"
-                }
-              />
-            </label>
-            <label className="check-row">
-              <input
-                type="checkbox"
-                checked={remember}
-                onChange={(e) => setRemember(e.target.checked)}
-              />
-              保存到系统安全凭据库，否则仅本次会话有效
-            </label>
-            <label className="check-row">
-              <input
-                type="checkbox"
-                checked={clear}
-                onChange={(e) => setClear(e.target.checked)}
-              />
-              清除此连接的密钥
-            </label>
-            {!imageOnly && (
-              <label className="check-row">
-                <input
-                  type="checkbox"
-                  checked={!!p.vision}
-                  onChange={(e) => set("vision", e.target.checked)}
-                />
-                该模型支持图片输入（视觉任务）
-              </label>
-            )}
-          </>
-        )}
-        <p className="muted small">
-          每个连接有独立凭据槽。保存后不会自动发送测试请求，也不会切换备用服务。
-        </p>
-        <div className="actions separated">
-          <button
-            className="primary"
-            onClick={async () => {
-              const data = { profile: p, remember };
-              if (key || clear) data.key = clear ? "" : key;
-              const ok = await run("connection_save", data);
-              if (ok) {
-                notify("连接已保存，请保存当前任务以完成绑定");
-                onSaved(p.id);
-              }
-            }}
-          >
-            保存独立连接
-          </button>
-          <button
-            onClick={() => {
-              const next = {
-                ...p,
-                id: "conn-" + freshId(),
-                name: p.name + " · 独立副本",
-              };
-              setP(next);
-              setKey("");
-              setClear(false);
-              notify("已改为独立副本，保存时不会复制原密钥。");
-            }}
-          >
-            复制为独立连接
-          </button>
-        </div>
-      </section>
-    </div>
   );
 }

@@ -158,7 +158,9 @@ def main():
                     "[...document.querySelectorAll('.image-hit img')].every(i=>i.complete&&i.naturalWidth>0)"
                 )
                 c.screenshot(output / "assets.png")
-                c.evaluate("document.querySelector('.image-hit').click()")
+                c.evaluate(
+                    "document.querySelector('.asset-card-shell .image-info h3').click()"
+                )
                 c.wait("document.querySelector('.asset-editor')")
                 c.fill(".asset-editor textarea", "灰蓝布衣，保留原文与演示补充的区别。")
                 c.click("保存资产修改", ".asset-editor button")
@@ -215,7 +217,9 @@ def main():
                 c.screenshot(output / "results-edit.png")
                 c.click("原文与情节", ".workspace-tabs button")
                 c.click("视觉资产库", ".workspace-tabs button")
-                c.evaluate("document.querySelector('.page-heading .toolbar-menu summary').click()")
+                c.evaluate(
+                    "document.querySelector('.page-heading .toolbar-menu summary').click()"
+                )
                 c.click("粘贴原文")
                 c.wait("document.querySelector('.modal textarea')")
                 c.fill(".modal form input", "独立章节测试")
@@ -238,8 +242,16 @@ def main():
                     c.evaluate("document.querySelectorAll('.scene-card').length") == 0
                 )
                 c.click("设置", ".system-sidebar button")
-                c.wait("document.querySelector('.settings-sheet select')")
-                c.fill(".settings-sheet select", "node-0")
+                c.wait("document.querySelector('.connection-card')")
+                c.evaluate(
+                    "document.querySelector('[aria-label=\"编辑连接 原文整理 · 独立连接\"]').click()"
+                )
+                c.wait("document.querySelector('[aria-label=\"绑定 default_text\"]')")
+                c.evaluate(
+                    "document.querySelector('[aria-label=\"绑定 default_text\"]').click()"
+                )
+                c.click("保存独立连接", '[aria-label="连接与密钥"] button')
+                c.wait("!document.querySelector('[aria-label=\"连接与密钥\"]')")
                 c.fill("textarea[aria-label='默认语言前置提示词']", "测试用户前置规则")
                 c.click("保存默认语言配置")
                 c.wait(
@@ -257,7 +269,9 @@ def main():
                     "document.querySelector('.settings-sheet').innerText"
                 )
                 c.click("视觉资产库", ".workspace-tabs button")
-                c.evaluate("document.querySelector('.source-toolbar .toolbar-menu summary').click()")
+                c.evaluate(
+                    "document.querySelector('.source-toolbar .toolbar-menu summary').click()"
+                )
                 c.click("获取本章建卡建议")
                 c.wait("document.querySelector('.advice-row')", 20)
                 c.evaluate(
@@ -275,7 +289,9 @@ def main():
                     "document.querySelector('[aria-label=\"收起 AI 助手\"]').click()"
                 )
                 c.screenshot(output / "chapter-candidates.png")
-                c.evaluate("document.querySelector('.source-toolbar .toolbar-menu').open=true")
+                c.evaluate(
+                    "document.querySelector('.source-toolbar .toolbar-menu').open=true"
+                )
                 c.click("完成本章资产整理")
                 c.wait(
                     "document.querySelector('.asset-stage-status').innerText.includes('已完成')"
@@ -377,7 +393,7 @@ def main():
                     "!!document.querySelector('[aria-label=\"建卡建议选择\"]')"
                 )
                 c.evaluate(
-                    "[...document.querySelectorAll('.asset-grid .image-card')].find(e=>e.innerText.includes('甲')).querySelector('.image-hit').click()"
+                    "[...document.querySelectorAll('.asset-grid .image-card')].find(e=>e.innerText.includes('甲')).querySelector('.image-info h3').click()"
                 )
                 c.wait("document.querySelector('.asset-editor')")
                 before = c.evaluate(
@@ -400,8 +416,9 @@ def main():
                 c.click("保存资产修改", ".asset-editor button")
                 c.wait("!document.querySelector('.asset-editor')")
                 c.evaluate(
-                    "[...document.querySelectorAll('.asset-grid .image-card')].find(e=>e.innerText.includes('甲')).querySelectorAll('footer button')[0].click()"
+                    "[...document.querySelectorAll('.asset-grid .image-card')].find(e=>e.innerText.includes('甲')).querySelector('.asset-card-menu summary').click()"
                 )
+                c.click("删除资产", ".asset-card-menu button")
                 c.wait(
                     "!([...document.querySelectorAll('.asset-grid .image-card')].some(e=>e.innerText.includes('甲')))"
                 )
@@ -453,9 +470,7 @@ def main():
                     + json.dumps(external_png.split(",")[1])
                     + "),c=>c.charCodeAt(0));const files=new DataTransfer();files.items.add(new File([bytes],'外部生成.png',{type:'image/png'}));document.querySelector('.drop-zone').dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:files}));})()"
                 )
-                c.wait(
-                    "document.querySelector('.render-candidate-strip button')"
-                )
+                c.wait("document.querySelector('.render-candidate-strip button')")
                 c.click("移除候选", ".render-output-pane button")
                 c.wait("!document.querySelector('.render-candidate-strip button')")
                 c.evaluate(
@@ -487,7 +502,7 @@ def main():
                 )
                 c.screenshot(output / "asset-images.png")
                 c.click("设置", ".system-sidebar button")
-                c.wait("document.querySelector('.settings-sheet select')")
+                c.wait("document.querySelector('.connections-hub')")
                 c.click("AI 选项", ".settings-tabs button")
                 c.wait("document.querySelector('[aria-label=\"资产关联方式\"]')")
                 assert (
